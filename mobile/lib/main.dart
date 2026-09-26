@@ -4,6 +4,7 @@ import 'api.dart';
 import 'auth_page.dart';
 import 'connection_editor.dart';
 import 'instrument_picker.dart';
+import 'news_panel.dart';
 export 'api.dart';
 import 'package:flutter/material.dart';
 
@@ -307,6 +308,14 @@ class _DashboardState extends State<Dashboard> {
               0 => overview(),
               1 => positions(),
               2 => history(),
+              3 => [
+                NewsPanel(
+                  key: ValueKey(
+                    '${widget.api.environment}:${jsonEncode(status["settings"])}',
+                  ),
+                  api: widget.api,
+                ),
+              ],
               _ => settings(),
             },
           ],
@@ -328,6 +337,10 @@ class _DashboardState extends State<Dashboard> {
         NavigationDestination(
           icon: Icon(Icons.receipt_long_outlined),
           label: '记录',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.newspaper_outlined),
+          label: '资讯',
         ),
         NavigationDestination(icon: Icon(Icons.tune), label: '设置'),
       ],
@@ -664,6 +677,7 @@ class _DashboardState extends State<Dashboard> {
               ),
               const SizedBox(height: 8),
               Text('${e['summary']}'),
+              NewsEvidence(payload: e['payload']),
             ],
           ),
         ),
@@ -980,6 +994,7 @@ String orderLabel(String v) =>
     v;
 String eventLabel(String v) =>
     const {
+      'NEWS_EVIDENCE': '资讯取样',
       'SETTINGS': '配置更新',
       'CONTROL': '运行控制',
       'ERROR': '异常暂停',

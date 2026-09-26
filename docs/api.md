@@ -11,6 +11,7 @@
 | POST | /api/auth/logout | 撤销当前会话 |
 | GET | /api/connections | 当前用户连接状态、模型地址/名称、允许地址；不返回密钥 |
 | PUT | /api/connections | 暂停时更新自己的连接；空值保留已有字段 |
+| GET | /api/news | 根据当前环境所选币种返回真实资讯与来源状态，无可用数据时返回 usable=false |
 | GET | /api/instruments | 当前环境可交易的线性 USDT 永续合约 ID 列表；无需 OKX 私有密钥，失败返回错误 |
 | GET | /api/status | 运行状态、凭据是否配置、最近账户快照、风控参数 |
 | POST | /api/sync | 主动从 OKX 刷新账户和持仓 |
@@ -54,3 +55,16 @@
 `POST /api/start` 在 LIVE 环境必须同时提交 `{"confirmLive":true}`，否则拒绝；DEMO 仍兼容空请求体。App 切换时先对原环境调用 `/pause`，再请求目标 `/status`，不会自动调用 `/start`。健康接口提供 `tradingEnvironments: ["DEMO","LIVE"]`；健康响应中的 environment 是默认环境，不表示所有用户的运行环境。
 
 `GET /api/instruments` 示例返回 `["BTC-USDT-SWAP","ETH-USDT-SWAP"]`，实际结果来自 OKX `GET /api/v5/public/instruments?instType=SWAP`，筛选 state=live、ctType=linear、settleCcy=USDT、面值币种与交易币种一致的合约。设置仍接受 1–5 个不重复 ID，执行交易前再次验证合约状态、模式及精度。
+
+
+## 资讯接口与证据
+
+`GET /api/news` 需要登录，环境由 X-Trading-Environment 指定，按该环境的 settings.instruments 筛选。响应字段：
+
+- checkedAt：本次评估时间；usable：是否有至少一条当前相关且有效的文章；message：当前证据状态说明。
+- sources：source、url、official、status（OK / UNAVAILABLE）、lastSuccess、message。状态反映获取成功，不等于事实确认或必有近期文章。
+- articles：id、source、url、title、excerpt、publishedAt、fetchedAt、category（MACRO / REGULATION / SECURITY / ASSET）、symbols、marketWide。
+
+列表最多 20 条。模型收到相同结构，开仓理由必须用 `[N0123456789abcdef]` 格式引用真实文章 ID。后端检查 ID 存在、当前币种相关性、来源状态及 48 小时发布／15 分钟采集窗口；不合格则拒绝指令。任何动作中的伪造 ID 都被拒绝。
+
+`/events` 新增 NEWS_EVIDENCE 类型，payload 为该轮资讯快照；DECISION / PREVIEW 的 payload 增加 news 字段，供复核引用。实时资讯为只读外部数据，不允许用户传入任意抓取 URL；XML 禁用 DTD、外部实体，响应上限 1 MiB，文章链接限发布者 HTTPS 域名。

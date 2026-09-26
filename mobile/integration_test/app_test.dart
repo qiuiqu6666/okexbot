@@ -57,6 +57,19 @@ void main() {
     await tester.tap(find.text('记录'));
     await tester.pumpAndSettle();
     expect(find.text('交易与决策记录'), findsOneWidget);
+    await tester.tap(find.text('资讯'));
+    await tester.pumpAndSettle();
+    expect(find.text('市场资讯'), findsOneWidget);
+    for (
+      var i = 0;
+      i < 80 && find.byType(LinearProgressIndicator).evaluate().isNotEmpty;
+      i++
+    ) {
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+    await tester.pumpAndSettle();
+    expect(find.textContaining('检查时间'), findsOneWidget);
+    await binding.takeScreenshot('news');
     await tester.tap(find.text('设置'));
     await tester.pumpAndSettle();
     expect(find.text(username), findsOneWidget);

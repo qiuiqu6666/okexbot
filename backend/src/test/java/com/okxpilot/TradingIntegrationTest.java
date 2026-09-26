@@ -32,14 +32,16 @@ class TradingIntegrationTest {
     @Autowired ObjectMapper json;
     OkxClient okx;
     AiClient ai;
+    NewsService news;
     static BigDecimal n(String x){return new BigDecimal(x);}
     Decision open(){return new Decision(Action.OPEN_LONG,"BTC-USDT-SWAP",n("100"),null,n("62000"),n("59000"),"结构验证");}
     @BeforeEach void setup() throws Exception {
         String username="t"+java.util.UUID.randomUUID().toString().replace("-","").substring(0,24);
         account=auth.register(new AuthService.Credentials(username,"test-password-123"),username);
         store=stores.forUser(account.user().id());
-        okx=mock(OkxClient.class);ai=mock(AiClient.class);
-        trading=new TradingService(store,okx,ai,new RiskEngine(),json);
+        okx=mock(OkxClient.class);ai=mock(AiClient.class);news=mock(NewsService.class);
+        when(news.evidence(anyList())).thenReturn(new NewsService.Evidence(Instant.now(),false,"test news unavailable",List.of(),List.of()));
+        trading=new TradingService(store,okx,ai,new RiskEngine(),json,news);
         when(okx.configured()).thenReturn(true);when(ai.configured()).thenReturn(true);when(ai.model()).thenReturn("test-model");
         when(okx.snapshot()).thenAnswer(x->new Snapshot(Instant.now(),n("1000"),n("500"),List.of()));
         when(okx.instrument(anyString())).thenAnswer(x->new Instrument(x.getArgument(0),n("0.01"),n("0.01"),n("0.01"),n("0.1"),n("1000")));
@@ -61,7 +63,7 @@ class TradingIntegrationTest {
         when(okx.order(anyString(),anyString())).thenThrow(new IllegalStateException("查询暂不可用"));
         trading.enable();trading.tick();assertThat(trading.status().get("enabled")).isEqualTo(false);
         assertThat(store.unsettled()).hasSize(1);
-        TradingService restarted=new TradingService(store,okx,ai,new RiskEngine(),json);
+        TradingService restarted=new TradingService(store,okx,ai,new RiskEngine(),json,news);
         assertThat(restarted.status().get("enabled")).isEqualTo(false);
         assertThatThrownBy(restarted::enable).hasMessageContaining("待确认");
         restarted.tick();verify(okx,times(1)).place(anyMap());
@@ -104,5 +106,28 @@ class TradingIntegrationTest {
         store.intent("pstoptest",d,Map.of("algoId","9","takeProfit",n("62000"),"stopLoss",n("59000")));
         when(okx.stops(anyString())).thenReturn(json.readTree("[{\"algoId\":\"9\",\"tpTriggerPx\":\"62000\",\"slTriggerPx\":\"59000\"}]"));
         trading.reconcileNow();assertThat(store.orders().get(0).get("state")).isEqualTo("APPLIED");
+    }
+
+    @Test void unavailableNewsPreventsAiOpeningAndIsAudited() {
+        var realNews=new NewsService(java.time.Clock.systemUTC(),List.of(),source->{throw new java.io.IOException();});
+        try {
+            trading=new TradingService(store,okx,ai,new RiskEngine(),json,realNews);
+            trading.enable();trading.tick();verify(okx,never()).place(anyMap());
+            assertThat(trading.status().get("lastError").toString()).contains("禁止新开仓");
+            assertThat(store.events()).anyMatch(e->"NEWS_EVIDENCE".equals(e.get("kind")));
+        }finally{realNews.close();}
+    }
+    @Test void realNewsEvidenceReachesModelAndPersistedDecision() {
+        var source=NewsService.SOURCES.get(0);
+        var realNews=new NewsService(java.time.Clock.systemUTC(),List.of(source),ignored->NewsServiceTest.feed(NewsServiceTest.item("Bitcoin ETF event","https://www.coindesk.com/test-evidence",Instant.now().toString())));
+        try {
+            var evidence=realNews.evidence(List.of("BTC-USDT-SWAP"));String id=evidence.articles().get(0).id();
+            when(ai.decide(any())).thenReturn(new Decision(Action.OPEN_LONG,"BTC-USDT-SWAP",n("100"),null,n("62000"),n("59000"),"行情与资讯一致 ["+id+"]"));
+            trading=new TradingService(store,okx,ai,new RiskEngine(),json,realNews);
+            trading.enable();trading.tick();verify(okx).place(anyMap());
+            var context=org.mockito.ArgumentCaptor.forClass(Object.class);verify(ai).decide(context.capture());
+            assertThat(((Map<?,?>)context.getValue()).containsKey("news")).isTrue();
+            assertThat(store.events()).anyMatch(e->"DECISION".equals(e.get("kind")) && e.get("payload").toString().contains("Bitcoin ETF event") && e.get("payload").toString().contains(id));
+        }finally{realNews.close();}
     }
 }

@@ -13,13 +13,14 @@ public class TradingService {
     private volatile AiClient ai;
     private final RiskEngine risk;
     private final ObjectMapper json;
+    private final NewsService news;
     private volatile boolean enabled=false;
     private volatile String lastError="";
     private volatile Instant lastCycle;
     private volatile Instant nextCycle=Instant.EPOCH;
     private volatile Snapshot snapshot;
-    public TradingService(Store store,OkxClient okx,AiClient ai,RiskEngine risk,ObjectMapper json) {
-        this.store=store;this.okx=okx;this.ai=ai;this.risk=risk;this.json=json;
+    public TradingService(Store store,OkxClient okx,AiClient ai,RiskEngine risk,ObjectMapper json,NewsService news) {
+        this.store=store;this.okx=okx;this.ai=ai;this.risk=risk;this.json=json;this.news=news;
     }
     public synchronized void reconfigure(OkxClient okx,AiClient ai) {
         if(enabled) throw new IllegalStateException("请先暂停自动交易");
@@ -32,6 +33,7 @@ public class TradingService {
         result.put("lastCycle",lastCycle);result.put("nextCycle",enabled?nextCycle:null);result.put("snapshot",snapshot);
         result.put("settings",store.settings());return result;
     }
+    public NewsService.Evidence news(){return news.evidence(store.settings().instruments());}
     public java.util.List<String> instruments(){return okx.instruments();}
     public synchronized void settings(Settings settings) {
         if(enabled) throw new IllegalStateException("请先暂停自动交易再修改参数");
@@ -87,7 +89,11 @@ public class TradingService {
             markets.put(id,Map.of("instrument",okx.instrument(id),"price",okx.price(id),"candlesNewestFirst",okx.candles(id)));
         }
         store.renew();
-        Decision d=ai.decide(Map.of("settings",settings,"account",snapshot,"markets",markets,"now",Instant.now()));
+        var evidence=news.evidence(settings.instruments());
+        store.renew();
+        store.audit("NEWS_EVIDENCE",evidence.message(),evidence);
+        Decision d=ai.decide(Map.of("settings",settings,"account",snapshot,"markets",markets,"news",evidence,"environment",store.environment(),"now",Instant.now()));
+        news.validate(d,evidence);
         lastCycle=Instant.now();
         // Refresh after model latency; no stale model-supplied balances or order sizes are trusted.
         store.renew();snapshot=okx.snapshot();
@@ -95,7 +101,7 @@ public class TradingService {
         Instrument instrument=okx.instrument(d.instrument());BigDecimal price=okx.price(d.instrument());
         BigDecimal baseline=(d.action()==Action.OPEN_LONG || d.action()==Action.OPEN_SHORT)?store.baseline(snapshot.equity()):BigDecimal.ONE;
         Plan plan=risk.validate(d,settings,snapshot,instrument,price,baseline);
-        store.audit(execute?"DECISION":"PREVIEW",d.reason(),Map.of("decision",d,"plan",plan,"account",snapshot,"price",price));
+        store.audit(execute?"DECISION":"PREVIEW",d.reason(),Map.of("decision",d,"plan",plan,"account",snapshot,"price",price,"news",evidence));
         if(execute && d.action()!=Action.HOLD) {
             if(!enabled) throw new IllegalStateException("用户已暂停，模型结果不执行");
             if(!plan.reduceOnly()) verifyProtection(snapshot);

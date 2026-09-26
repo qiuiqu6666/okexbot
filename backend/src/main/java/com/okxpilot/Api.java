@@ -35,6 +35,7 @@ public class Api {
     @PutMapping("/settings") public Object settings(@RequestBody Settings s,HttpServletRequest r){engine(r).settings(s);return engine(r).status();}
     @GetMapping("/connections") public Object connections(HttpServletRequest r){return connections.forEnvironment(environment(r)).view(user(r).id());}
     @PutMapping("/connections") public Object connections(@RequestBody ConnectionService.Update u,HttpServletRequest r){trading.configure(user(r).id(),environment(r),u);return connections.forEnvironment(environment(r)).view(user(r).id());}
+    @GetMapping("/news") public Object news(HttpServletRequest r){return engine(r).news();}
     @GetMapping("/instruments") public Object instruments(HttpServletRequest r){return engine(r).instruments();}
     @PostMapping("/start") public Object start(@RequestBody(required=false) StartRequest body,HttpServletRequest r){
         if(environment(r)==TradingEnvironment.LIVE && (body==null || !body.confirmLive())) throw new IllegalArgumentException("开启实盘自动交易必须明确确认真实资金交易");

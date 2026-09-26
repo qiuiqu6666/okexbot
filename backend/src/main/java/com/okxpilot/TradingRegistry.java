@@ -13,15 +13,16 @@ public class TradingRegistry {
     private final ConnectionService connections;
     private final ObjectMapper json;
     private final RiskEngine risk;
+    private final NewsService news;
     private final ConcurrentMap<Account,TradingService> engines=new ConcurrentHashMap<>();
     private final Set<Account> running=ConcurrentHashMap.newKeySet();
     private final ThreadPoolExecutor workers=new ThreadPoolExecutor(4,4,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(64));
-    public TradingRegistry(Store stores,ConnectionService connections,ObjectMapper json,RiskEngine risk){this.stores=stores;this.connections=connections;this.json=json;this.risk=risk;}
+    public TradingRegistry(Store stores,ConnectionService connections,ObjectMapper json,RiskEngine risk,NewsService news){this.stores=stores;this.connections=connections;this.json=json;this.risk=risk;this.news=news;}
     private record Account(long user,TradingEnvironment environment) {}
     public TradingService forUser(long user){return forUser(user,TradingEnvironment.DEMO);}
     public TradingService forUser(long user,TradingEnvironment env){return engines.computeIfAbsent(new Account(user,env),account->{
         var c=connections.forEnvironment(env).load(user);
-        return new TradingService(stores.forUser(user,env),okx(c,env),ai(c),risk,json);
+        return new TradingService(stores.forUser(user,env),okx(c,env),ai(c),risk,json,news);
     });}
     public void configure(long user,ConnectionService.Update update){configure(user,TradingEnvironment.DEMO,update);}
     public void configure(long user,TradingEnvironment env,ConnectionService.Update update) {

@@ -75,3 +75,10 @@ TradingRegistry 为每个用户创建独立的交易实例，持仓快照、启�
 交易实例按 (userId, environment) 创建，调度同时监控两种环境，旧环境已有订单不会因手机切换而丢失对账。DEMO 使用既有 user_* 表，LIVE 使用独立 live_user_* 表（结构相同）；用户认证表共用。ConnectionService 按环境使用不同的密文附加认证数据，模拟盘旧密文保持兼容。所有交易方法在创建时绑定对应环境的 Store 和 OkxClient，不在执行过程中修改环境。
 
 每个客户端请求显式选择环境，旧客户端缺省为 DEMO。实盘请求不添加 x-simulated-trading；不复用或回退到另一环境的密钥。实盘启动另需 confirmLive=true。币种查询为公开行情请求，用户无需先保存 OKX Key 才能选择币种。
+
+
+## 资讯证据链
+
+NewsService 从固定发布者 RSS 并行取数，共享 5 分钟缓存，各来源独立失败。解析阶段限制响应大小、禁用 XML 外部实体并校验来源链接和发布时间；组合阶段按各用户当前环境的币种及市场整体事件筛选去重。
+
+TradingService 在请求模型前采集 NewsService.Evidence，并写入 NEWS_EVIDENCE 审计。模型上下文包含 news 和 environment；返回后先检查引用，再做现有行情刷新、风控及执行校验。DECISION/PREVIEW 同时保存 news 快照，客户端“记录”按 reason 引用 ID 展开原文依据。资讯故障不能阻止手动平仓或绕过原有保护单、未知订单和账户模式检查。
