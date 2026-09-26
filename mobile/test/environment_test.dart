@@ -51,7 +51,7 @@ void main() {
       final xrp = tester.widget<CheckboxListTile>(
         find.widgetWithText(CheckboxListTile, 'XRP'),
       );
-      expect(xrp.onChanged, isNull);
+      expect(xrp.onChanged, isNotNull);
       await tester.tap(find.text('确定'));
       await tester.pumpAndSettle();
       expect(saved.length, 5);
@@ -63,7 +63,7 @@ void main() {
       }
       expect(form.currentState!.validate(), isFalse);
       await tester.pump();
-      expect(find.text('请选择 1–5 个交易币种'), findsOneWidget);
+      expect(find.text('请至少选择 1 个交易币种'), findsOneWidget);
     },
   );
   testWidgets(

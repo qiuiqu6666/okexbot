@@ -135,9 +135,9 @@ public class TradingService {
         Instrument instrument=okx.instrument(d.instrument());BigDecimal price=okx.price(d.instrument());
         BigDecimal baseline=(d.action()==Action.OPEN_LONG || d.action()==Action.OPEN_SHORT)?store.baseline(snapshot.equity()):BigDecimal.ONE;
         Plan plan;
-        try {plan=risk.validate(d,settings,snapshot,instrument,price,baseline,store.riskPolicy());}
+        try {plan=risk.validate(d,settings,snapshot,instrument,price,baseline,store.riskPolicy(),okx.hedge());}
         catch(IllegalArgumentException e){return rejected(settings,d,safeMessage(e));}
-        try {if(!plan.reduceOnly()) guard.opening(d,plan);}
+        try {if(!plan.reduceOnly()) guard.opening(d,plan,OkxClient.orderPosSide(okx.hedge(),plan.side(),false));}
         catch(IllegalStateException e){rejected(settings,d,safeMessage(e));throw e;}
         store.audit(execute?"DECISION":"PREVIEW",d.reason(),Map.of("decision",d,"plan",plan,"account",snapshot,"price",price,"news",evidence));
         if(execute && d.action()!=Action.HOLD) {
@@ -170,13 +170,14 @@ public class TradingService {
             guard.requireOwned(position(d.instrument()));amend(d,clientId,automatic);return;
         }
         Map<String,Object> body=new LinkedHashMap<>();
-        body.put("instId",d.instrument());body.put("tdMode","isolated");body.put("posSide","net");
+        String posSide=OkxClient.orderPosSide(okx.hedge(),plan.side(),plan.reduceOnly());
+        body.put("instId",d.instrument());body.put("tdMode","isolated");body.put("posSide",posSide);
         body.put("side",plan.side());body.put("ordType","market");body.put("sz",plan.contracts().toPlainString());
-        body.put("clOrdId",clientId);body.put("reduceOnly",plan.reduceOnly());
+        body.put("clOrdId",clientId);body.put("reduceOnly",okx.hedge()?false:plan.reduceOnly());
         if(!plan.reduceOnly()) {
             if(!okx.pendingOrders().isEmpty()) throw new IllegalStateException("账户存在挂单，禁止新增风险");
             if(!okx.stops(d.instrument()).isEmpty()) throw new IllegalStateException("该合约有残留保护单，请在 OKX 清理并核对后再开仓");
-            okx.leverage(d.instrument(),settings.leverage());
+            okx.leverage(d.instrument(),settings.leverage(),okx.hedge()?posSide:null);
             body.put("attachAlgoOrds",List.of(Map.of("attachAlgoClOrdId","s"+clientId,
                     "tpTriggerPx",d.takeProfit().toPlainString(),"tpOrdPx","-1","tpTriggerPxType","last",
                     "slTriggerPx",d.stopLoss().toPlainString(),"slOrdPx","-1","slTriggerPxType","last")));
@@ -185,9 +186,9 @@ public class TradingService {
         snapshot=okx.snapshot();guard.sync(snapshot,okx);guard.observeEquity(snapshot);
         BigDecimal currentPrice=okx.price(d.instrument());
         Instrument currentInstrument=okx.instrument(d.instrument());
-        Plan current=risk.validate(d,settings,snapshot,currentInstrument,currentPrice,plan.reduceOnly()?BigDecimal.ONE:store.baseline(snapshot.equity()),store.riskPolicy());
+        Plan current=risk.validate(d,settings,snapshot,currentInstrument,currentPrice,plan.reduceOnly()?BigDecimal.ONE:store.baseline(snapshot.equity()),store.riskPolicy(),okx.hedge());
         if(!current.reduceOnly()) {
-            guard.opening(d,current);verifyProtection(snapshot);
+            guard.opening(d,current,OkxClient.orderPosSide(okx.hedge(),current.side(),false));verifyProtection(snapshot);
             if(!store.unsettled().isEmpty() || !okx.pendingOrders().isEmpty()) throw new IllegalStateException("账户存在挂单或未确认订单，禁止新增风险");
             for(JsonNode algo:okx.pendingAlgos()) {
                 Position p=snapshot.positions().stream().filter(v->v.instrument().equals(algo.path("instId").asText())).findFirst().orElse(null);
@@ -199,6 +200,8 @@ public class TradingService {
         risk.validateBook(okx.book(d.instrument()),current,currentPrice,store.riskPolicy());
         body.put("sz",current.contracts().toPlainString());
         body.put("side",current.side());
+        body.put("posSide",OkxClient.orderPosSide(okx.hedge(),current.side(),current.reduceOnly()));
+        body.put("reduceOnly",okx.hedge()?false:current.reduceOnly());
         store.renew();
         if(automatic && !enabled) throw new IllegalStateException("用户已暂停，本次指令取消");
         Map<String,Object> persisted=new LinkedHashMap<>(body);persisted.put("riskNotional",current.notionalUsdt().toPlainString());
@@ -222,7 +225,7 @@ public class TradingService {
         JsonNode stop=owned.get(0);String algoId=stop.path("algoId").asText();
         Position position=snapshot.positions().stream().filter(p->p.instrument().equals(d.instrument())).findFirst().orElseThrow();
         BigDecimal oldSl=OkxClient.number(stop,"slTriggerPx");
-        BigDecimal remembered=store.riskState().positions.get(d.instrument()).stopLoss;
+        BigDecimal remembered=guard.managed(position).stopLoss;
         if(position.contracts().signum()>0?d.stopLoss().compareTo(oldSl.max(remembered))<0:d.stopLoss().compareTo(oldSl.min(remembered))>0)
             throw new IllegalArgumentException("自动调整只允许收紧止损，不允许扩大亏损范围");
         store.renew();
@@ -272,13 +275,13 @@ public class TradingService {
                         positive(OkxClient.number(s,"slTriggerPx")) && positive(OkxClient.number(s,"tpTriggerPx")) &&
                         OkxClient.number(s,"sz").compareTo(p.contracts().abs())==0 &&
                         s.path("side").asText().equals(p.contracts().signum()>0?"sell":"buy")) {
-                    BigDecimal previous=store.riskState().positions.get(p.instrument()).stopLoss;
+                    BigDecimal previous=guard.managed(p).stopLoss;
                     BigDecimal current=OkxClient.number(s,"slTriggerPx");
                     if(p.contracts().signum()>0?current.compareTo(previous)<0:current.compareTo(previous)>0)
                         throw new IllegalStateException("保护单止损被放宽，禁止新增风险");
                     if(p.contracts().signum()>0?current.compareTo(p.markPrice())>=0:current.compareTo(p.markPrice())<=0)
                         throw new IllegalStateException("止损已越过当前价格，需确认触发状态");
-                    guard.stopUpdated(p.instrument(),current);
+                    guard.stopUpdated(p,current);
                     protectedPosition=true;
                 }
             }
@@ -298,7 +301,10 @@ public class TradingService {
     }
     private void checkAccount(){okx.checkAccountMode();store.bindAccount(okx.accountId());}
     private Position position(String id) {
-        return snapshot.positions().stream().filter(p->p.instrument().equals(id)).findFirst().orElseThrow(()->new IllegalStateException("没有可管理的仓位"));
+        List<Position> rows=snapshot.positions().stream().filter(p->p.instrument().equals(id)).toList();
+        if(rows.size()>1) throw new IllegalStateException("该合约同时存在多空仓位，无法自动选择");
+        if(rows.isEmpty()) throw new IllegalStateException("没有可管理的仓位");
+        return rows.get(0);
     }
     private <T> T withLease(java.util.function.Supplier<T> work) {
         if(!store.acquire()) throw new IllegalStateException("另一个服务正在操作该账户，请稍后重试");

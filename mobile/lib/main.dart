@@ -532,7 +532,7 @@ class _DashboardState extends State<Dashboard> {
         style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600),
       ),
       const SizedBox(height: 8),
-      const Text('单向持仓 · 逐仓模式', style: TextStyle(color: muted)),
+      const Text('逐仓模式 · 支持单向或双向持仓', style: TextStyle(color: muted)),
       const SizedBox(height: 16),
       OutlinedButton.icon(
         onPressed: busy ? null : () => act('/sync', success: '账户已同步'),
@@ -734,7 +734,7 @@ class _DashboardState extends State<Dashboard> {
           infoRow('交易环境', 'OKX $environmentLabel'),
           infoRow('OKX 凭据', status['okxConfigured'] == true ? '已配置' : '未配置'),
           infoRow('模型接口', status['aiConfigured'] == true ? '已配置' : '未配置'),
-          infoRow('持仓模式', '单向 · 逐仓'),
+          infoRow('持仓模式', '逐仓 · 单向或双向'),
         ],
       ),
     ),
@@ -959,8 +959,8 @@ class _SettingsEditorState extends State<SettingsEditor> {
     'maxOrderUsdt': '单笔敞口上限 / USDT',
     'maxExposureUsdt': '总敞口上限 / USDT',
     'maxDailyLossPct': '日内权益损失上限 / %',
-    'maxPositions': '最大持仓数量（1–5）',
-    'leverage': '杠杆（1–3）',
+    'maxPositions': '最大持仓数量',
+    'leverage': '杠杆',
     'intervalSeconds': '分析间隔 / 秒（至少 60）',
   };
   @override
@@ -1024,6 +1024,16 @@ class _SettingsEditorState extends State<SettingsEditor> {
                       ].contains(item.key) &&
                       n != n.round()) {
                     return '请输入整数';
+                  }
+                  if (item.key == 'intervalSeconds' && n < 60) {
+                    return '分析间隔至少 60 秒';
+                  }
+                  final order = num.tryParse(fields['maxOrderUsdt']!.text.trim());
+                  final exposure = num.tryParse(
+                    fields['maxExposureUsdt']!.text.trim(),
+                  );
+                  if (order != null && exposure != null && order > exposure) {
+                    return '单笔敞口不能大于总敞口';
                   }
                   return null;
                 },

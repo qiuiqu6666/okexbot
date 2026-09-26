@@ -39,6 +39,7 @@ class TradingIntegrationTest {
         String username="t"+java.util.UUID.randomUUID().toString().replace("-","").substring(0,24);
         account=auth.register(new AuthService.Credentials(username,"test-password-123"),username);
         store=stores.forUser(account.user().id());
+        store.settings(new Settings(List.of("BTC-USDT-SWAP","ETH-USDT-SWAP"),n("100"),n("300"),n("3"),2,1,300));
         okx=mock(OkxClient.class);ai=mock(AiClient.class);news=mock(NewsService.class);
         when(news.evidence(anyList())).thenReturn(new NewsService.Evidence(Instant.now(),false,"test news unavailable",List.of(),List.of()));
         trading=new TradingService(store,okx,ai,new RiskEngine(),json,news);

@@ -13,7 +13,8 @@ class RiskEngineTest {
     static BigDecimal n(String x){return new BigDecimal(x);}
     Snapshot account(List<Position> positions){return new Snapshot(Instant.now(),n("1000"),n("500"),positions);}
     Decision open(){return new Decision(Action.OPEN_LONG,"BTC-USDT-SWAP",n("100"),null,n("62000"),n("59000"),"测试信号");}
-    Plan validate(Decision d,Snapshot s){return risk.validate(d,Settings.defaults(),s,instrument,n("60000"),n("1000"));}
+    Settings limits(){return new Settings(List.of("BTC-USDT-SWAP","ETH-USDT-SWAP","SOL-USDT-SWAP"),n("100"),n("300"),n("3"),2,1,300);}
+    Plan validate(Decision d,Snapshot s){return risk.validate(d,limits(),s,instrument,n("60000"),n("1000"));}
     @Test void convertsNotionalToContractsRoundingDown(){
         Plan p=validate(open(),account(List.of()));assertThat(p.contracts()).isEqualByComparingTo("0.16");
         assertThat(p.notionalUsdt()).isEqualByComparingTo("96");assertThat(p.reduceOnly()).isFalse();
@@ -51,18 +52,32 @@ class RiskEngineTest {
         assertThatThrownBy(()->validate(new Decision(Action.OPEN_LONG,instrument.id(),n("1"),null,n("62000"),n("59000"),"开仓"),account(List.of()))).hasMessageContaining("最小下单量");
         assertThatThrownBy(()->validate(new Decision(Action.OPEN_LONG,instrument.id(),n("101"),null,n("62000"),n("59000"),"开仓"),account(List.of()))).hasMessageContaining("单笔");
     }
+    @Test void mapsHedgePositionSideAndOrderSide(){
+        assertThat(OkxClient.signedSize("long",n("2"))).isEqualByComparingTo("2");
+        assertThat(OkxClient.signedSize("short",n("2"))).isEqualByComparingTo("-2");
+        assertThat(OkxClient.signedSize("net",n("-2"))).isEqualByComparingTo("-2");
+        assertThat(OkxClient.orderPosSide(false,"buy",false)).isEqualTo("net");
+        assertThat(OkxClient.orderPosSide(true,"buy",false)).isEqualTo("long");
+        assertThat(OkxClient.orderPosSide(true,"sell",false)).isEqualTo("short");
+        assertThat(OkxClient.orderPosSide(true,"sell",true)).isEqualTo("long");
+        assertThat(OkxClient.orderPosSide(true,"buy",true)).isEqualTo("short");
+    }
+    @Test void formatsOkxTimestampWithMilliseconds(){
+        assertThat(OkxClient.timestamp(Instant.parse("2020-12-08T09:08:57.715123456Z"))).isEqualTo("2020-12-08T09:08:57.715Z");
+        assertThat(OkxClient.timestamp(Instant.parse("2020-12-08T09:08:57Z"))).isEqualTo("2020-12-08T09:08:57.000Z");
+    }
     @Test void verifiesIndependentHmacVector(){
         assertThat(OkxClient.sign("key","","","The quick brown fox jumps over the lazy dog",""))
                 .isEqualTo("97yD9DBThCSxMpjmqm+xQ+9NWaFJRhdZl0edvC0aPNg=");
     }
     @Test void sizesFromStopRiskAndIncludesRoundTripCosts(){
         Snapshot small=new Snapshot(Instant.now(),n("200"),n("200"),List.of());
-        Plan plan=risk.validate(open(),Settings.defaults(),small,instrument,n("60000"),n("200"));
+        Plan plan=risk.validate(open(),limits(),small,instrument,n("60000"),n("200"));
         assertThat(plan.contracts()).isEqualByComparingTo("0.07");
         BigDecimal estimatedLoss=plan.contracts().multiply(n("0.01")).multiply(n("1000").add(n("60000").multiply(n("0.006"))));
         assertThat(estimatedLoss).isLessThanOrEqualTo(n("1"));
         Decision tighter=new Decision(Action.OPEN_LONG,instrument.id(),n("100"),null,n("62000"),n("59900"),"测试");
-        assertThat(risk.validate(tighter,Settings.defaults(),small,instrument,n("60000"),n("200")).contracts()).isGreaterThan(plan.contracts());
+        assertThat(risk.validate(tighter,limits(),small,instrument,n("60000"),n("200")).contracts()).isGreaterThan(plan.contracts());
     }
     @Test void directionalCorrelatedAndMarginLimitsAreIndependent(){
         Position same=new Position("ETH-USDT-SWAP",n("1"),n("100"),n("150"),n("0"),"isolated");

@@ -5,6 +5,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import static com.okxpilot.Domain.*;
 
 @Component
@@ -13,6 +14,9 @@ public class RiskEngine {
         return validate(d,s,account,i,price,baseline,RiskPolicy.defaults());
     }
     public Plan validate(Decision d, Settings s, Snapshot account, Instrument i, BigDecimal price, BigDecimal baseline,RiskPolicy policy) {
+        return validate(d,s,account,i,price,baseline,policy,false);
+    }
+    public Plan validate(Decision d, Settings s, Snapshot account, Instrument i, BigDecimal price, BigDecimal baseline,RiskPolicy policy,boolean hedge) {
         policy.validate();
         s.validate();
         if(d==null || d.action()==null || d.instrument()==null || !s.instruments().contains(d.instrument()) || !i.id().equals(d.instrument()))
@@ -20,12 +24,14 @@ public class RiskEngine {
         if(d.reason()==null || d.reason().isBlank() || d.reason().length()>1500) throw new IllegalArgumentException("决策理由缺失或过长");
         if(Duration.between(account.fetchedAt(),Instant.now()).abs().compareTo(Duration.ofSeconds(30))>0 || !positive(price))
             throw new IllegalArgumentException("账户或行情数据过期");
-        Position position = account.positions().stream().filter(p->p.instrument().equals(d.instrument())).findFirst().orElse(null);
-        if(position!=null && !position.marginMode().equals("isolated")) throw new IllegalArgumentException("第一版只管理逐仓持仓");
+        List<Position> rows=account.positions().stream().filter(p->p.instrument().equals(d.instrument())).toList();
+        if(rows.stream().anyMatch(p->!p.marginMode().equals("isolated"))) throw new IllegalArgumentException("第一版只管理逐仓持仓");
+        Position position=rows.size()==1?rows.get(0):null;
         if(d.action()==Action.HOLD) return new Plan("",BigDecimal.ZERO,true,BigDecimal.ZERO);
         boolean opening=d.action()==Action.OPEN_LONG || d.action()==Action.OPEN_SHORT;
         if(opening) {
-            if(position!=null) throw new IllegalArgumentException("已有仓位时禁止重复开仓或自动反手");
+            boolean sameDirection=rows.stream().anyMatch(p->(p.contracts().signum()>0)==(d.action()==Action.OPEN_LONG));
+            if(sameDirection || (!hedge && !rows.isEmpty())) throw new IllegalArgumentException(hedge?"已有同方向仓位，禁止加仓":"已有仓位时禁止重复开仓或自动反手");
             if(!positive(d.notionalUsdt()) || d.notionalUsdt().compareTo(s.maxOrderUsdt())>0) throw new IllegalArgumentException("单笔金额超限");
             BigDecimal exposure=account.positions().stream().map(Position::notionalUsdt).reduce(BigDecimal.ZERO,BigDecimal::add);
             if(exposure.add(d.notionalUsdt()).compareTo(s.maxExposureUsdt())>0 || account.positions().size()>=s.maxPositions())
@@ -56,6 +62,7 @@ public class RiskEngine {
                 throw new IllegalArgumentException("账户保证金占用比例超限");
             return new Plan(d.action()==Action.OPEN_LONG?"buy":"sell",size,false,notional);
         }
+        if(rows.size()>1) throw new IllegalArgumentException("该合约同时存在多空仓位，无法自动选择");
         if(position==null) throw new IllegalArgumentException("没有可管理的仓位");
         if(d.action()==Action.UPDATE_STOPS) {
             validateStops(d,price,i,position.contracts().signum()>0);

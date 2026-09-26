@@ -11,6 +11,8 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -23,7 +25,20 @@ public class OkxClient {
     private final TradingEnvironment environment;
     private final ObjectMapper json;
     private String accountId="";
+    private boolean hedge;
     public String accountId(){return accountId;}
+    public boolean hedge(){return hedge;}
+    public static BigDecimal signedSize(String posSide,BigDecimal size) {
+        if("net".equals(posSide)) return size;
+        if("long".equals(posSide)) return size.abs();
+        if("short".equals(posSide)) return size.abs().negate();
+        throw new IllegalStateException("不支持的持仓方向");
+    }
+    public static String orderPosSide(boolean hedge,String side,boolean reduceOnly) {
+        if(!hedge) return "net";
+        if(!reduceOnly) return "buy".equals(side)?"long":"short";
+        return "sell".equals(side)?"long":"short";
+    }
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
     public OkxClient(String key,String secret,String passphrase,ObjectMapper json) {
         this(key,secret,passphrase,json,TradingEnvironment.DEMO);
@@ -44,6 +59,8 @@ public class OkxClient {
         return List.copyOf(ids);
     }
     public boolean configured() { return !key.isBlank() && !secret.isBlank() && !passphrase.isBlank(); }
+    private static final DateTimeFormatter OKX_TIMESTAMP=DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
+    public static String timestamp(Instant instant){return OKX_TIMESTAMP.format(instant);}
     public static String sign(String secret, String timestamp, String method, String path, String body) {
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
@@ -59,7 +76,7 @@ public class OkxClient {
                     .timeout(Duration.ofSeconds(12)).header("Content-Type","application/json");
             environmentHeaders().forEach(request::header);
             if (authenticated) {
-                String timestamp = Instant.now().toString();
+                String timestamp = timestamp(Instant.now());
                 request.header("OK-ACCESS-KEY",key).header("OK-ACCESS-PASSPHRASE",passphrase)
                         .header("OK-ACCESS-TIMESTAMP",timestamp).header("OK-ACCESS-SIGN",sign(secret,timestamp,method,path,body));
             }
@@ -81,8 +98,10 @@ public class OkxClient {
     public static class Rejected extends RuntimeException { public Rejected(String message) { super(message); } }
     public void checkAccountMode() {
         JsonNode config = first(call("GET","/api/v5/account/config",null,true));
-        if (!"net_mode".equals(config.path("posMode").asText()) || !"2".equals(config.path("acctLv").asText()))
-            throw new IllegalStateException("第一版仅支持合约模式（Futures mode）及单向持仓（net_mode），请在当前 OKX 账户设置");
+        String mode=config.path("posMode").asText();
+        hedge="long_short_mode".equals(mode);
+        if(!"2".equals(config.path("acctLv").asText()) || !(hedge || "net_mode".equals(mode)))
+            throw new IllegalStateException("仅支持合约模式，持仓模式须为单向或双向");
         accountId=config.path("uid").asText();
         if(accountId.isBlank()) throw new IllegalStateException("无法确认交易所账户身份");
     }
@@ -95,9 +114,9 @@ public class OkxClient {
         for (JsonNode p:call("GET","/api/v5/account/positions?instType=SWAP",null,true)) {
             BigDecimal size=number(p,"pos");
             if (size.signum()==0) continue;
-            if (!p.path("instId").asText().endsWith("-USDT-SWAP") || !"net".equals(p.path("posSide").asText()))
-                throw new IllegalStateException("账户存在不支持的合约/双向持仓，停止自动交易");
-            positions.add(new Position(p.path("instId").asText(),size,number(p,"markPx"),number(p,"notionalUsd").abs(),number(p,"upl"),p.path("mgnMode").asText(),p.path("posId").asText(),p.path("cTime").asLong(),number(p,"lever"),p.path("tradeId").asText()));
+            if (!p.path("instId").asText().endsWith("-USDT-SWAP"))
+                throw new IllegalStateException("账户存在不支持的合约，停止自动交易");
+            positions.add(new Position(p.path("instId").asText(),signedSize(p.path("posSide").asText(),size),number(p,"markPx"),number(p,"notionalUsd").abs(),number(p,"upl"),p.path("mgnMode").asText(),p.path("posId").asText(),p.path("cTime").asLong(),number(p,"lever"),p.path("tradeId").asText()));
         }
         return new Snapshot(Instant.now(),number(usdt,"eq"),number(usdt,usdt.path("availBal").asText().isBlank()?"availEq":"availBal"),positions);
     }
@@ -139,8 +158,12 @@ public class OkxClient {
     public void cancel(String id,String clientId) {
         validateId(id);call("POST","/api/v5/trade/cancel-order",Map.of("instId",id,"clOrdId",clientId),true);
     }
-    public void leverage(String id, int leverage) {
-        call("POST","/api/v5/account/set-leverage",Map.of("instId",id,"lever",Integer.toString(leverage),"mgnMode","isolated"),true);
+    public void leverage(String id, int leverage) { leverage(id,leverage,null); }
+    public void leverage(String id, int leverage, String posSide) {
+        Map<String,Object> body=new java.util.LinkedHashMap<>();
+        body.put("instId",id);body.put("lever",Integer.toString(leverage));body.put("mgnMode","isolated");
+        if(posSide!=null) body.put("posSide",posSide);
+        call("POST","/api/v5/account/set-leverage",body,true);
     }
     public JsonNode place(Map<String,Object> body) { return first(call("POST","/api/v5/trade/order",body,true)); }
     public JsonNode order(String id, String clientId) {

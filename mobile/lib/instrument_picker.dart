@@ -48,9 +48,8 @@ class _InstrumentPickerState extends State<InstrumentPicker> {
   @override
   Widget build(BuildContext context) => FormField<Set<String>>(
     initialValue: selected,
-    validator: (value) => value == null || value.isEmpty || value.length > 5
-        ? '请选择 1–5 个交易币种'
-        : null,
+    validator: (value) =>
+        value == null || value.isEmpty ? '请至少选择 1 个交易币种' : null,
     builder: (field) => Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -59,7 +58,7 @@ class _InstrumentPickerState extends State<InstrumentPicker> {
           style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 8),
-        Text('已选 ${selected.length}/5；保存风险参数后生效'),
+        Text('已选 ${selected.length} 个；保存风险参数后生效'),
         Wrap(
           spacing: 8,
           children: [
@@ -111,7 +110,7 @@ class _CoinDialogState extends State<_CoinDialog> {
       ...widget.items,
     }.where((id) => id.contains(query.toUpperCase())).toList()..sort();
     return AlertDialog(
-      title: Text('选择交易币种（${selected.length}/5）'),
+      title: Text('选择交易币种（已选 ${selected.length}）'),
       content: SizedBox(
         width: 460,
         height: 420,
@@ -137,7 +136,7 @@ class _CoinDialogState extends State<_CoinDialog> {
                           title: Text(id.replaceAll('-USDT-SWAP', '')),
                           subtitle: Text(available ? id : '$id · 当前不可用，可取消选择'),
                           onChanged:
-                              checked || (available && selected.length < 5)
+                              checked || available
                               ? (value) => setState(() {
                                   if (value == true) {
                                     selected.add(id);
@@ -160,9 +159,7 @@ class _CoinDialogState extends State<_CoinDialog> {
         ),
         FilledButton(
           onPressed:
-              selected.isNotEmpty &&
-                  selected.length <= 5 &&
-                  selected.every(widget.items.contains)
+              selected.isNotEmpty && selected.every(widget.items.contains)
               ? () => Navigator.pop(context, {...selected})
               : null,
           child: const Text('确定'),
