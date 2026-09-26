@@ -54,8 +54,40 @@ public class Store {
     }
     public List<Map<String,Object>> orders(){return db.queryForList(sql("SELECT * FROM user_order_intent WHERE user_id=? ORDER BY created_at DESC LIMIT 100"),user());}
     public List<Map<String,Object>> events(){return db.queryForList(sql("SELECT * FROM user_audit_event WHERE user_id=? ORDER BY id DESC LIMIT 100"),user());}
+    public List<Map<String,Object>> analyses(){return db.queryForList(sql("SELECT * FROM user_audit_event WHERE user_id=? AND kind IN ('DECISION','PREVIEW','AI_SKIPPED','AI_REJECTED','AI_EXECUTION_FAILED') ORDER BY id DESC LIMIT 100"),user());}
     public List<Map<String,Object>> unsettled(){return db.queryForList(sql("SELECT * FROM user_order_intent WHERE user_id=? AND state IN ('SUBMITTING','UNKNOWN','ACCEPTED','live','partially_filled') ORDER BY created_at"),user());}
     public boolean hasOrders(){return db.queryForObject(sql("SELECT COUNT(*) FROM user_order_intent WHERE user_id=?"),Long.class,user())>0;}
+    public RiskPolicy riskPolicy(){return document("user_risk_policy",RiskPolicy.class,RiskPolicy.defaults());}
+    public void bindAccount(String uid) {
+        if(uid==null || uid.isBlank()) throw new IllegalStateException("无法确认交易所账户身份");
+        List<String> rows=db.query(sql("SELECT exchange_uid FROM user_exchange_account WHERE user_id=?"),(r,n)->r.getString(1),user());
+        if(!rows.isEmpty()) {
+            if(!rows.get(0).equals(uid)) throw new IllegalStateException("禁止切换已绑定的交易所账户");
+            return;
+        }
+        try {db.update(sql("INSERT INTO user_exchange_account(user_id,exchange_uid) VALUES(?,?)"),user(),uid);}
+        catch(org.springframework.dao.DuplicateKeyException e){throw new IllegalStateException("该交易所账户已绑定其他用户，禁止并发管理");}
+    }
+    public void riskPolicy(RiskPolicy policy){policy.validate();document("user_risk_policy",policy);}
+    public RiskState riskState(){return document("user_risk_state",RiskState.class,new RiskState());}
+    public void riskState(RiskState state){document("user_risk_state",state);}
+    private <T> T document(String table,Class<T> type,T fallback) {
+        List<String> rows=db.query(sql("SELECT payload FROM "+table+" WHERE user_id=?"),(r,n)->r.getString(1),user());
+        if(rows.isEmpty()) return fallback;
+        try{return json.readValue(rows.get(0),type);}catch(Exception e){throw new IllegalStateException("风险状态无法读取，禁止交易");}
+    }
+    private void document(String table,Object value) {
+        if(db.update(sql("UPDATE "+table+" SET payload=? WHERE user_id=?"),encode(value),user())==0)
+            db.update(sql("INSERT INTO "+table+"(user_id,payload) VALUES(?,?)"),user(),encode(value));
+    }
+    public long recentOpenCount() {
+        return db.queryForObject(sql("SELECT COUNT(*) FROM user_order_intent WHERE user_id=? AND action IN ('OPEN_LONG','OPEN_SHORT') AND created_at>=?"),
+                Long.class,user(),Instant.now().minusSeconds(3600).toString());
+    }
+    public boolean recentlyOpened(String instrument,int seconds) {
+        return db.queryForObject(sql("SELECT COUNT(*) FROM user_order_intent WHERE user_id=? AND instrument=? AND action IN ('OPEN_LONG','OPEN_SHORT') AND created_at>=?"),
+                Long.class,user(),instrument,Instant.now().minusSeconds(seconds).toString())>0;
+    }
     public boolean ownsStop(String id) {
         return id!=null && id.startsWith("s") && db.queryForObject(sql("SELECT COUNT(*) FROM user_order_intent WHERE user_id=? AND client_id=? AND action IN ('OPEN_LONG','OPEN_SHORT')"),Integer.class,user(),id.substring(1))>0;
     }

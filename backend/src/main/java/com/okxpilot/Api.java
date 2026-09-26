@@ -33,6 +33,9 @@ public class Api {
     @GetMapping("/status") public Object status(HttpServletRequest r){return engine(r).status();}
     @PostMapping("/sync") public Object sync(HttpServletRequest r){return engine(r).refresh();}
     @PutMapping("/settings") public Object settings(@RequestBody Settings s,HttpServletRequest r){engine(r).settings(s);return engine(r).status();}
+    @PutMapping("/risk-policy") public Object riskPolicy(@RequestBody RiskPolicy p,HttpServletRequest r){engine(r).riskPolicy(p);return engine(r).status();}
+    public record RiskReset(boolean confirm) {}
+    @PostMapping("/risk/reset") public Object resetRisk(@RequestBody RiskReset body,HttpServletRequest r){engine(r).resetRisk(body.confirm());return engine(r).status();}
     @GetMapping("/connections") public Object connections(HttpServletRequest r){return connections.forEnvironment(environment(r)).view(user(r).id());}
     @PutMapping("/connections") public Object connections(@RequestBody ConnectionService.Update u,HttpServletRequest r){trading.configure(user(r).id(),environment(r),u);return connections.forEnvironment(environment(r)).view(user(r).id());}
     @GetMapping("/news") public Object news(HttpServletRequest r){return engine(r).news();}
@@ -48,6 +51,7 @@ public class Api {
     @PostMapping("/positions/{instrument}/reduce") public Object reduce(@PathVariable String instrument,HttpServletRequest r){engine(r).close(instrument,true);return Map.of("accepted",true);}
     @GetMapping("/orders") public Object orders(HttpServletRequest r){return stores.forUser(user(r).id(),environment(r)).orders();}
     @GetMapping("/events") public Object events(HttpServletRequest r){return stores.forUser(user(r).id(),environment(r)).events();}
+    @GetMapping("/analysis") public Object analysis(HttpServletRequest r){return stores.forUser(user(r).id(),environment(r)).analyses();}
 }
 
 @Component

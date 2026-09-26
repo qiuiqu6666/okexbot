@@ -55,4 +55,35 @@ class RiskEngineTest {
         assertThat(OkxClient.sign("key","","","The quick brown fox jumps over the lazy dog",""))
                 .isEqualTo("97yD9DBThCSxMpjmqm+xQ+9NWaFJRhdZl0edvC0aPNg=");
     }
+    @Test void sizesFromStopRiskAndIncludesRoundTripCosts(){
+        Snapshot small=new Snapshot(Instant.now(),n("200"),n("200"),List.of());
+        Plan plan=risk.validate(open(),Settings.defaults(),small,instrument,n("60000"),n("200"));
+        assertThat(plan.contracts()).isEqualByComparingTo("0.07");
+        BigDecimal estimatedLoss=plan.contracts().multiply(n("0.01")).multiply(n("1000").add(n("60000").multiply(n("0.006"))));
+        assertThat(estimatedLoss).isLessThanOrEqualTo(n("1"));
+        Decision tighter=new Decision(Action.OPEN_LONG,instrument.id(),n("100"),null,n("62000"),n("59900"),"测试");
+        assertThat(risk.validate(tighter,Settings.defaults(),small,instrument,n("60000"),n("200")).contracts()).isGreaterThan(plan.contracts());
+    }
+    @Test void directionalCorrelatedAndMarginLimitsAreIndependent(){
+        Position same=new Position("ETH-USDT-SWAP",n("1"),n("100"),n("150"),n("0"),"isolated");
+        assertThatThrownBy(()->validate(open(),account(List.of(same)))).hasMessageContaining("同方向");
+        Position opposite=new Position("ETH-USDT-SWAP",n("-1"),n("100"),n("180"),n("0"),"isolated");
+        assertThatThrownBy(()->validate(open(),account(List.of(opposite)))).hasMessageContaining("相关币种");
+        assertThatThrownBy(()->validate(open(),new Snapshot(Instant.now(),n("1000"),n("450"),List.of()))).hasMessageContaining("占用比例");
+    }
+    @Test void bookChecksFreshnessSpreadDepthAndSlippage() throws Exception {
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();
+        var book=json.createObjectNode().put("ts",System.currentTimeMillis());
+        book.set("asks",json.readTree("[[\"60001\",\"0.1\"],[\"60002\",\"0.1\"]]"));
+        book.set("bids",json.readTree("[[\"59999\",\"1\"]]"));
+        Plan plan=new Plan("buy",n("0.16"),false,n("96"));
+        risk.validateBook(book,plan,n("60000"),RiskPolicy.defaults());
+        book.put("ts",System.currentTimeMillis()-6000);
+        assertThatThrownBy(()->risk.validateBook(book,plan,n("60000"),RiskPolicy.defaults())).hasMessageContaining("过期");
+        book.put("ts",System.currentTimeMillis());
+        assertThatThrownBy(()->risk.validateBook(book,new Plan("buy",n("1"),false,n("600")),n("60000"),RiskPolicy.defaults())).hasMessageContaining("深度");
+        assertThatThrownBy(()->risk.validateBook(book,plan,n("59000"),RiskPolicy.defaults())).hasMessageContaining("滑点");
+        book.set("bids",json.readTree("[[\"59000\",\"1\"]]"));
+        assertThatThrownBy(()->risk.validateBook(book,plan,n("60000"),RiskPolicy.defaults())).hasMessageContaining("价差");
+    }
 }

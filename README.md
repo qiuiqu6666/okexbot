@@ -1,5 +1,7 @@
 # 仓位领航 · OKX AI Pilot
 
+交易硬约束、默认参数和升级注意事项见 [风险约束说明](docs/risk-controls.md)。
+
 Java 17 / Spring Boot + MySQL + Flutter Android/iOS 的 AI 仓位管理 MVP。支持 **OKX 模拟盘／实盘切换、USDT 永续、合约账户模式、单向持仓、逐仓**，每次登录默认显示模拟盘。
 
 ## 当前功能

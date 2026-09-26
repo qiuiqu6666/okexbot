@@ -22,6 +22,8 @@ public class OkxClient {
     private final String key, secret, passphrase;
     private final TradingEnvironment environment;
     private final ObjectMapper json;
+    private String accountId="";
+    public String accountId(){return accountId;}
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
     public OkxClient(String key,String secret,String passphrase,ObjectMapper json) {
         this(key,secret,passphrase,json,TradingEnvironment.DEMO);
@@ -81,6 +83,8 @@ public class OkxClient {
         JsonNode config = first(call("GET","/api/v5/account/config",null,true));
         if (!"net_mode".equals(config.path("posMode").asText()) || !"2".equals(config.path("acctLv").asText()))
             throw new IllegalStateException("第一版仅支持合约模式（Futures mode）及单向持仓（net_mode），请在当前 OKX 账户设置");
+        accountId=config.path("uid").asText();
+        if(accountId.isBlank()) throw new IllegalStateException("无法确认交易所账户身份");
     }
     public Snapshot snapshot() {
         JsonNode balance = first(call("GET","/api/v5/account/balance?ccy=USDT",null,true));
@@ -93,7 +97,7 @@ public class OkxClient {
             if (size.signum()==0) continue;
             if (!p.path("instId").asText().endsWith("-USDT-SWAP") || !"net".equals(p.path("posSide").asText()))
                 throw new IllegalStateException("账户存在不支持的合约/双向持仓，停止自动交易");
-            positions.add(new Position(p.path("instId").asText(),size,number(p,"markPx"),number(p,"notionalUsd").abs(),number(p,"upl"),p.path("mgnMode").asText()));
+            positions.add(new Position(p.path("instId").asText(),size,number(p,"markPx"),number(p,"notionalUsd").abs(),number(p,"upl"),p.path("mgnMode").asText(),p.path("posId").asText(),p.path("cTime").asLong(),number(p,"lever"),p.path("tradeId").asText()));
         }
         return new Snapshot(Instant.now(),number(usdt,"eq"),number(usdt,usdt.path("availBal").asText().isBlank()?"availEq":"availBal"),positions);
     }
@@ -120,6 +124,21 @@ public class OkxClient {
         return rows;
     }
     public JsonNode pendingOrders() { return call("GET","/api/v5/trade/orders-pending?instType=SWAP",null,true); }
+    public List<JsonNode> pendingAlgos() {
+        List<JsonNode> result=new ArrayList<>();
+        for(String type:List.of("conditional","oco","trigger","move_order_stop"))
+            for(JsonNode row:call("GET","/api/v5/trade/orders-algo-pending?ordType="+type+"&instType=SWAP",null,true)) result.add(row);
+        return result;
+    }
+    public JsonNode book(String id) {
+        validateId(id);return first(call("GET","/api/v5/market/books?instId="+id+"&sz=400",null,false));
+    }
+    public JsonNode positionHistory(String id) {
+        validateId(id);return call("GET","/api/v5/account/positions-history?instType=SWAP&instId="+id+"&limit=100",null,true);
+    }
+    public void cancel(String id,String clientId) {
+        validateId(id);call("POST","/api/v5/trade/cancel-order",Map.of("instId",id,"clOrdId",clientId),true);
+    }
     public void leverage(String id, int leverage) {
         call("POST","/api/v5/account/set-leverage",Map.of("instId",id,"lever",Integer.toString(leverage),"mgnMode","isolated"),true);
     }

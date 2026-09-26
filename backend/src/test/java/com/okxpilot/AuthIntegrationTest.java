@@ -68,7 +68,8 @@ class AuthIntegrationTest {
         assertThat(sa.orders().get(0).get("state")).isEqualTo("SUBMITTING");assertThat(sb.ownsStop("s"+id)).isFalse();
         mvc.perform(get("/api/events").param("userId",Long.toString(a.user().id())).header("Authorization",bearer(b))).andExpect(status().isOk()).andExpect(content().json("[]"));
         mvc.perform(get("/api/orders").header("Authorization",bearer(b))).andExpect(status().isOk()).andExpect(content().json("[]"));
-        var config=new Settings(java.util.List.of("SOL-USDT-SWAP"),new java.math.BigDecimal("20"),new java.math.BigDecimal("50"),new java.math.BigDecimal("2"),1,1,600);
+        // Keep BTC while this user's BTC order is unresolved; still verify the settings remain user-scoped.
+        var config=new Settings(java.util.List.of("SOL-USDT-SWAP","BTC-USDT-SWAP"),new java.math.BigDecimal("20"),new java.math.BigDecimal("50"),new java.math.BigDecimal("2"),1,1,600);
         mvc.perform(put("/api/settings").header("Authorization",bearer(a)).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(config))).andExpect(status().isOk());
         assertThat(sa.settings()).isEqualTo(config);assertThat(sb.settings()).isEqualTo(Settings.defaults());
         mvc.perform(post("/api/pause").header("Authorization",bearer(b))).andExpect(status().isOk());

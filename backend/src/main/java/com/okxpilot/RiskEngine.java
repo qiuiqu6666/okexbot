@@ -10,6 +10,10 @@ import static com.okxpilot.Domain.*;
 @Component
 public class RiskEngine {
     public Plan validate(Decision d, Settings s, Snapshot account, Instrument i, BigDecimal price, BigDecimal baseline) {
+        return validate(d,s,account,i,price,baseline,RiskPolicy.defaults());
+    }
+    public Plan validate(Decision d, Settings s, Snapshot account, Instrument i, BigDecimal price, BigDecimal baseline,RiskPolicy policy) {
+        policy.validate();
         s.validate();
         if(d==null || d.action()==null || d.instrument()==null || !s.instruments().contains(d.instrument()) || !i.id().equals(d.instrument()))
             throw new IllegalArgumentException("模型动作或合约不在允许范围");
@@ -32,9 +36,25 @@ public class RiskEngine {
             if(d.notionalUsdt().divide(BigDecimal.valueOf(s.leverage()),10,RoundingMode.UP)
                     .compareTo(account.available().multiply(new BigDecimal("0.9")))>0) throw new IllegalArgumentException("可用保证金不足");
             validateStops(d,price,i,d.action()==Action.OPEN_LONG);
-            BigDecimal size=roundDown(d.notionalUsdt().divide(price.multiply(i.contractValue()),16,RoundingMode.DOWN),i.lotSize());
+            BigDecimal oneWayCosts=policy.takerFeeBps().add(policy.maxSlippageBps()).divide(new BigDecimal("10000"));
+            BigDecimal lossPerUnit=price.subtract(d.stopLoss()).abs().add(price.add(price.max(d.stopLoss())).multiply(oneWayCosts));
+            BigDecimal budget=account.equity().multiply(policy.maxTradeRiskPct()).divide(new BigDecimal("100"));
+            BigDecimal riskSize=budget.divide(lossPerUnit.multiply(i.contractValue()),16,RoundingMode.DOWN);
+            BigDecimal size=roundDown(d.notionalUsdt().divide(price.multiply(i.contractValue()),16,RoundingMode.DOWN).min(riskSize),i.lotSize());
             checkSize(size,i);
-            return new Plan(d.action()==Action.OPEN_LONG?"buy":"sell",size,false,size.multiply(i.contractValue()).multiply(price));
+            BigDecimal notional=size.multiply(i.contractValue()).multiply(price);
+            BigDecimal directional=account.positions().stream().filter(p->(p.contracts().signum()>0)==(d.action()==Action.OPEN_LONG))
+                    .map(p->p.notionalUsdt().abs()).reduce(BigDecimal.ZERO,BigDecimal::add);
+            if(directional.add(notional).compareTo(policy.maxDirectionalExposureUsdt())>0)
+                throw new IllegalArgumentException("同方向合计敞口超限");
+            // Treat every supported crypto contract as one correlated group; no offsetting longs against shorts.
+            if(exposure.add(notional).compareTo(policy.maxCorrelatedExposureUsdt())>0)
+                throw new IllegalArgumentException("相关币种合计敞口超限");
+            BigDecimal used=account.equity().subtract(account.available()).max(BigDecimal.ZERO);
+            if(used.add(notional.divide(BigDecimal.valueOf(s.leverage()),10,RoundingMode.UP)).compareTo(
+                    account.equity().multiply(policy.maxMarginPct()).divide(new BigDecimal("100")))>0)
+                throw new IllegalArgumentException("账户保证金占用比例超限");
+            return new Plan(d.action()==Action.OPEN_LONG?"buy":"sell",size,false,notional);
         }
         if(position==null) throw new IllegalArgumentException("没有可管理的仓位");
         if(d.action()==Action.UPDATE_STOPS) {
@@ -46,6 +66,28 @@ public class RiskEngine {
         BigDecimal size=roundDown(position.contracts().abs().multiply(fraction),i.lotSize());
         checkSize(size,i);
         return new Plan(position.contracts().signum()>0?"sell":"buy",size,true,size.multiply(i.contractValue()).multiply(price));
+    }
+    public void validateBook(com.fasterxml.jackson.databind.JsonNode book,Plan plan,BigDecimal reference,RiskPolicy policy) {
+        if(book==null || !book.path("asks").isArray() || !book.path("bids").isArray() || book.path("asks").isEmpty() || book.path("bids").isEmpty())
+            throw new IllegalArgumentException("盘口数据缺失");
+        long age=System.currentTimeMillis()-book.path("ts").asLong();
+        if(age< -5000 || age>5000) throw new IllegalArgumentException("盘口行情过期");
+        BigDecimal ask=new BigDecimal(book.path("asks").get(0).get(0).asText()),bid=new BigDecimal(book.path("bids").get(0).get(0).asText());
+        if(!positive(bid) || ask.compareTo(bid)<0 || ask.subtract(bid).multiply(new BigDecimal("10000"))
+                .compareTo(bid.add(ask).divide(new BigDecimal("2")).multiply(policy.maxSpreadBps()))>0)
+            throw new IllegalArgumentException("买卖价差超限或盘口无效");
+        BigDecimal remaining=plan.contracts(),cost=BigDecimal.ZERO;
+        for(var level:book.path(plan.side().equals("buy")?"asks":"bids")) {
+            BigDecimal px=new BigDecimal(level.path(0).asText()),qty=new BigDecimal(level.path(1).asText());
+            if(!positive(px) || qty.signum()<0) throw new IllegalArgumentException("盘口档位无效");
+            BigDecimal take=remaining.min(qty);cost=cost.add(take.multiply(px));remaining=remaining.subtract(take);
+            if(remaining.signum()==0) break;
+        }
+        if(remaining.signum()>0) throw new IllegalArgumentException("盘口深度不足");
+        BigDecimal average=cost.divide(plan.contracts(),16,RoundingMode.HALF_UP);
+        // Absolute displacement also rejects a stale reference even if the move appears favourable.
+        if(average.subtract(reference).abs().multiply(new BigDecimal("10000")).compareTo(reference.multiply(policy.maxSlippageBps()))>0)
+            throw new IllegalArgumentException("预计滑点超限");
     }
     public void validateStops(Decision d,BigDecimal price,Instrument i,boolean longSide) {
         if(!positive(d.takeProfit()) || !positive(d.stopLoss())) throw new IllegalArgumentException("必须同时提供止盈和止损");

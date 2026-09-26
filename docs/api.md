@@ -16,6 +16,8 @@
 | GET | /api/status | 运行状态、凭据是否配置、最近账户快照、风控参数 |
 | POST | /api/sync | 主动从 OKX 刷新账户和持仓 |
 | PUT | /api/settings | 暂停时修改风控设置 |
+| PUT | /api/risk-policy | 暂停时修改硬性风险约束，见 [风险约束说明](risk-controls.md) |
+| POST | /api/risk/reset | `{"confirm":true}` 人工复核解除熔断，要求空仓、无挂单且当日日损未超限 |
 | POST | /api/start | 校验账户、未完成订单及保护单后启用自动交易 |
 | POST | /api/pause | 暂停后续自动指令，保留保护单 |
 | POST | /api/preview | 模型分析并风控校验，记录结果，不下单 |
@@ -24,6 +26,7 @@
 | POST | /api/positions/{instrument}/close | 按最新仓位平仓，只减仓市价单 |
 | GET | /api/orders | 最近 100 条订单意图及交易所状态 |
 | GET | /api/events | 最近 100 条操作/分析事件 |
+| GET | /api/analysis | 当前用户及环境最近 100 条 AI 分析、拦截和执行异常记录；完整说明在 payload 中，不受其他日志挤占 |
 
 设置请求示例：
 

@@ -5,6 +5,7 @@ import 'auth_page.dart';
 import 'connection_editor.dart';
 import 'instrument_picker.dart';
 import 'news_panel.dart';
+import 'analysis_panel.dart';
 export 'api.dart';
 import 'package:flutter/material.dart';
 
@@ -59,10 +60,11 @@ class Dashboard extends StatefulWidget {
 class _DashboardState extends State<Dashboard> {
   late Map<String, dynamic> status;
   Map<String, dynamic>? connections;
-  List<dynamic> events = [], orders = [];
+  List<dynamic> events = [], orders = [], analyses = [];
   Timer? timer;
   int tab = 0;
   bool busy = false, refreshing = false, stopping = false;
+  bool previewing = false;
   bool leaving = false, switching = false;
   String get environmentLabel =>
       widget.api.environment == 'LIVE' ? '实盘' : '模拟盘';
@@ -92,6 +94,7 @@ class _DashboardState extends State<Dashboard> {
         connections = null;
         orders = [];
         events = [];
+        analyses = [];
         error = null;
         syncedAt = null;
       });
@@ -160,6 +163,7 @@ class _DashboardState extends State<Dashboard> {
         widget.api.request('/events'),
         widget.api.request('/orders'),
         widget.api.request('/connections'),
+        widget.api.request('/analysis'),
       ]);
       if (mounted && !busy && requestedEnvironment == widget.api.environment) {
         setState(() {
@@ -167,6 +171,7 @@ class _DashboardState extends State<Dashboard> {
           events = results[1] as List;
           orders = results[2] as List;
           connections = results[3] as Map<String, dynamic>;
+          analyses = results[4] as List;
           syncedAt = DateTime.now();
           error = null;
         });
@@ -187,12 +192,13 @@ class _DashboardState extends State<Dashboard> {
     if (busy || leaving) return false;
     setState(() {
       busy = true;
+      previewing = path == '/preview';
       error = null;
     });
     try {
       final result = await widget.api.request(path, method: method, body: body);
       if (!mounted || leaving) return false;
-      if (path == '/preview') {
+      if (path == '/preview' && tab != 5) {
         await showDialog<void>(
           context: context,
           builder: (c) => AlertDialog(
@@ -225,9 +231,11 @@ class _DashboardState extends State<Dashboard> {
           ),
         );
       } else {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(success)));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(path == '/preview' ? '分析已完成，结果已更新到 AI 分析' : success),
+          ),
+        );
       }
       return true;
     } catch (e) {
@@ -236,7 +244,10 @@ class _DashboardState extends State<Dashboard> {
     } finally {
       if (mounted) {
         final savedError = error;
-        setState(() => busy = false);
+        setState(() {
+          busy = false;
+          previewing = false;
+        });
         await refresh();
         if (mounted && savedError != null) setState(() => error = savedError);
       }
@@ -316,6 +327,15 @@ class _DashboardState extends State<Dashboard> {
                   api: widget.api,
                 ),
               ],
+              5 => [
+                AnalysisPanel(
+                  records: analyses,
+                  model: '${status['model'] ?? ''}',
+                  environment: environmentLabel,
+                  analyzing: status['analyzing'] == true || previewing,
+                  onAnalyze: busy ? null : () => act('/preview'),
+                ),
+              ],
               _ => settings(),
             },
           ],
@@ -343,6 +363,10 @@ class _DashboardState extends State<Dashboard> {
           label: '资讯',
         ),
         NavigationDestination(icon: Icon(Icons.tune), label: '设置'),
+        NavigationDestination(
+          icon: Icon(Icons.psychology_outlined),
+          label: 'AI 分析',
+        ),
       ],
     ),
   );
@@ -743,7 +767,172 @@ class _DashboardState extends State<Dashboard> {
     ),
     const SizedBox(height: 16),
     const Notice('修改参数或连接前请暂停自动交易。每个用户应使用独立的 OKX 账户。'),
+    if (status['riskPolicy'] is Map<String, dynamic>) ...[
+      const SizedBox(height: 16),
+      RiskPolicyEditor(
+        key: ValueKey(
+          '${widget.api.environment}:${jsonEncode(status['riskPolicy'])}',
+        ),
+        initial: status['riskPolicy'] as Map<String, dynamic>,
+        riskStatus: (status['riskStatus'] as Map<String, dynamic>?) ?? {},
+        enabled: !busy && status['enabled'] != true,
+        onSave: (value) => act(
+          '/risk-policy',
+          method: 'PUT',
+          body: value,
+          success: '硬性风险约束已保存',
+        ),
+        onReset: () => act(
+          '/risk/reset',
+          body: {'confirm': true},
+          success: '已人工解除熔断，交易仍保持暂停',
+        ),
+      ),
+    ],
   ];
+}
+
+class RiskPolicyEditor extends StatefulWidget {
+  final Map<String, dynamic> initial, riskStatus;
+  final bool enabled;
+  final Future<void> Function(Map<String, dynamic>) onSave;
+  final Future<void> Function() onReset;
+  const RiskPolicyEditor({
+    super.key,
+    required this.initial,
+    required this.riskStatus,
+    required this.enabled,
+    required this.onSave,
+    required this.onReset,
+  });
+  @override
+  State<RiskPolicyEditor> createState() => _RiskPolicyEditorState();
+}
+
+class _RiskPolicyEditorState extends State<RiskPolicyEditor> {
+  final form = GlobalKey<FormState>();
+  static const labels = {
+    'maxTradeRiskPct': '单笔预估亏损上限 / 权益 %（最高 2）',
+    'maxMarginPct': '保证金占用上限 / 权益 %（最高 80）',
+    'maxDirectionalExposureUsdt': '同方向敞口上限 / USDT',
+    'maxCorrelatedExposureUsdt': '相关币种总敞口上限 / USDT',
+    'maxDrawdownPct': '峰值回撤熔断 / %（最高 20）',
+    'maxConsecutiveLosses': '连续亏损熔断 / 次（1–10）',
+    'maxOpensPerHour': '每小时开仓上限 / 次（1–20）',
+    'cooldownSeconds': '开仓间隔 / 秒（至少 60）',
+    'lossCooldownSeconds': '平仓后冷却 / 秒（不小于开仓间隔）',
+    'orderTimeoutSeconds': '未成交撤单超时 / 秒（10–300）',
+    'takerFeeBps': '单边手续费预算 / 基点',
+    'maxSlippageBps': '最大预计滑点 / 基点',
+    'maxSpreadBps': '最大买卖价差 / 基点',
+  };
+  static const integerKeys = {
+    'maxConsecutiveLosses',
+    'maxOpensPerHour',
+    'cooldownSeconds',
+    'lossCooldownSeconds',
+    'orderTimeoutSeconds',
+  };
+  late final fields = {
+    for (final key in labels.keys)
+      key: TextEditingController(text: '${widget.initial[key]}'),
+  };
+  @override
+  void dispose() {
+    for (final field in fields.values) {
+      field.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Surface(
+    child: Form(
+      key: form,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '硬性风险约束',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            '由服务器强制执行。所有币种按同一相关组限制，不以多空相抵。1 基点 = 0.01%。费用为预算，须覆盖账户实际费率。',
+          ),
+          const SizedBox(height: 12),
+          Text('连续亏损：${widget.riskStatus['consecutiveLosses'] ?? 0} 次'),
+          if ((widget.riskStatus['haltReason'] ?? '').toString().isNotEmpty)
+            Notice('已熔断：${widget.riskStatus['haltReason']}。仍可核对订单及减少已有风险。'),
+          for (final entry in labels.entries)
+            Padding(
+              padding: const EdgeInsets.only(top: 14),
+              child: TextFormField(
+                controller: fields[entry.key],
+                enabled: widget.enabled,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: InputDecoration(labelText: entry.value),
+                validator: (value) {
+                  final number = num.tryParse(value ?? '');
+                  if (number == null || !number.isFinite || number <= 0) {
+                    return '请输入有效正数';
+                  }
+                  if (integerKeys.contains(entry.key) &&
+                      number != number.round()) {
+                    return '请输入整数';
+                  }
+                  return null;
+                },
+              ),
+            ),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: widget.enabled
+                ? () async {
+                    if (form.currentState!.validate()) {
+                      await widget.onSave({
+                        for (final key in labels.keys)
+                          key: num.parse(fields[key]!.text.trim()),
+                      });
+                    }
+                  }
+                : null,
+            child: const Text('保存硬性约束'),
+          ),
+          if ((widget.riskStatus['haltReason'] ?? '').toString().isNotEmpty)
+            TextButton(
+              onPressed: widget.enabled
+                  ? () async {
+                      final confirmed = await showDialog<bool>(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('人工复核解除熔断'),
+                          content: const Text(
+                            '请先核对亏损原因。仅空仓且无待确认订单时允许解除；当日亏损仍超限时不能解除。解除会重置回撤基准和连续亏损次数，保留冷却及亏损后仓位限制，不会自动开始交易。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text('取消'),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              child: const Text('已复核，解除熔断'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirmed == true) await widget.onReset();
+                    }
+                  : null,
+              child: const Text('人工复核解除熔断'),
+            ),
+        ],
+      ),
+    ),
+  );
 }
 
 class SettingsEditor extends StatefulWidget {

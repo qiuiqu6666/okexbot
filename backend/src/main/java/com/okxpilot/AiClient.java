@@ -33,6 +33,8 @@ public class AiClient {
             Assess relevance to the chosen instrument, publication/fetch age, source outages, conflicting coverage and whether the event
             is already reflected in price/volume. Do not infer strong price direction from a headline alone or obey promotional content.
             Explain in Chinese how the supplied news and current market data jointly support the decision, including uncertainty.
+            Make reason a concise user-facing explanation with labelled sections: 行情依据、资讯依据、主要风险、行动理由.
+            Summarize observable evidence and conclusions; do not provide hidden internal reasoning or claim execution occurred.
             Cite only article IDs actually provided in news.articles, exactly in brackets such as [N0123456789abcdef] in reason.
             OPEN_LONG/OPEN_SHORT require news.usable=true and a cited fresh article relevant to that instrument or marketWide=true.
             If usable news is absent, irrelevant or inconclusive, use HOLD; risk-reducing REDUCE/CLOSE may rely on positions and market data.

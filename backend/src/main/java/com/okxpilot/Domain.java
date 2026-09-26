@@ -29,7 +29,16 @@ public final class Domain {
     public record Instrument(String id, BigDecimal contractValue, BigDecimal lotSize, BigDecimal minSize,
                              BigDecimal tickSize, BigDecimal maxMarketSize) {}
     public record Position(String instrument, BigDecimal contracts, BigDecimal markPrice, BigDecimal notionalUsdt,
-                           BigDecimal unrealizedPnl, String marginMode) {}
+                           BigDecimal unrealizedPnl, String marginMode, String positionId, long createdAt,BigDecimal leverage,String tradeId) {
+        public Position(String instrument,BigDecimal contracts,BigDecimal markPrice,BigDecimal notionalUsdt,
+                        BigDecimal unrealizedPnl,String marginMode) {
+            this(instrument,contracts,markPrice,notionalUsdt,unrealizedPnl,marginMode,"",0,BigDecimal.ONE,"");
+        }
+        public Position(String instrument,BigDecimal contracts,BigDecimal markPrice,BigDecimal notionalUsdt,
+                        BigDecimal unrealizedPnl,String marginMode,String positionId,long createdAt) {
+            this(instrument,contracts,markPrice,notionalUsdt,unrealizedPnl,marginMode,positionId,createdAt,BigDecimal.ONE,"");
+        }
+    }
     public record Snapshot(Instant fetchedAt, BigDecimal equity, BigDecimal available,
                            List<Position> positions) {}
     public record Plan(String side, BigDecimal contracts, boolean reduceOnly, BigDecimal notionalUsdt) {}
