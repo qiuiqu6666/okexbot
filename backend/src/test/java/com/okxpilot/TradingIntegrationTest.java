@@ -6,7 +6,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.jdbc.core.JdbcTemplate;
 import java.math.BigDecimal;
@@ -23,20 +22,24 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(properties={"spring.datasource.url=jdbc:h2:mem:pilot;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE", "spring.datasource.username=sa","spring.datasource.password=", "pilot.operator-token=01234567890123456789012345678901", "pilot.poll-ms=3600000"})
 @AutoConfigureMockMvc
 class TradingIntegrationTest {
-    @Autowired Store store;
-    @Autowired TradingService trading;
+    @Autowired Store stores;
+    @Autowired AuthService auth;
+    Store store;
+    TradingService trading;
+    AuthService.LoginResult account;
     @Autowired JdbcTemplate db;
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
-    @MockitoBean OkxClient okx;
-    @MockitoBean AiClient ai;
+    OkxClient okx;
+    AiClient ai;
     static BigDecimal n(String x){return new BigDecimal(x);}
     Decision open(){return new Decision(Action.OPEN_LONG,"BTC-USDT-SWAP",n("100"),null,n("62000"),n("59000"),"结构验证");}
     @BeforeEach void setup() throws Exception {
-        trading.pause();
-        for(String table:List.of("order_intent","audit_event","bot_config","equity_baseline")) db.update("DELETE FROM "+table);
-        db.update("UPDATE execution_lease SET owner='',expires_at=0");
-        reset(okx,ai);
+        String username="t"+java.util.UUID.randomUUID().toString().replace("-","").substring(0,24);
+        account=auth.register(new AuthService.Credentials(username,"test-password-123"),username);
+        store=stores.forUser(account.user().id());
+        okx=mock(OkxClient.class);ai=mock(AiClient.class);
+        trading=new TradingService(store,okx,ai,new RiskEngine(),json);
         when(okx.configured()).thenReturn(true);when(ai.configured()).thenReturn(true);when(ai.model()).thenReturn("test-model");
         when(okx.snapshot()).thenAnswer(x->new Snapshot(Instant.now(),n("1000"),n("500"),List.of()));
         when(okx.instrument(anyString())).thenAnswer(x->new Instrument(x.getArgument(0),n("0.01"),n("0.01"),n("0.01"),n("0.1"),n("1000")));
@@ -89,11 +92,11 @@ class TradingIntegrationTest {
         mvc.perform(get("/api/status")).andExpect(status().isUnauthorized());
         mvc.perform(post("/api/start")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/health")).andExpect(status().isOk());
-        mvc.perform(get("/api/status").header("Authorization","Bearer 01234567890123456789012345678901"))
+        mvc.perform(get("/api/status").header("Authorization","Bearer "+account.token()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.environment").value("DEMO"));
     }
     @Test void onlyOneProcessCanHoldExecutionLease(){
-        Store other=new Store(db,json);assertThat(store.acquire()).isTrue();assertThat(other.acquire()).isFalse();
+        Store other=stores.forUser(account.user().id());assertThat(store.acquire()).isTrue();assertThat(other.acquire()).isFalse();
         store.release();assertThat(other.acquire()).isTrue();other.release();
     }
     @Test void stopAmendmentMustMatchExchangeBeforeSettling() throws Exception {

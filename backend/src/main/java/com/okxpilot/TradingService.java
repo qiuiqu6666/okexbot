@@ -2,18 +2,15 @@ package com.okxpilot;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.stereotype.Service;
-import org.springframework.scheduling.annotation.Scheduled;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.*;
 import static com.okxpilot.Domain.*;
 
-@Service
 public class TradingService {
     private final Store store;
-    private final OkxClient okx;
-    private final AiClient ai;
+    private volatile OkxClient okx;
+    private volatile AiClient ai;
     private final RiskEngine risk;
     private final ObjectMapper json;
     private volatile boolean enabled=false;
@@ -23,6 +20,10 @@ public class TradingService {
     private volatile Snapshot snapshot;
     public TradingService(Store store,OkxClient okx,AiClient ai,RiskEngine risk,ObjectMapper json) {
         this.store=store;this.okx=okx;this.ai=ai;this.risk=risk;this.json=json;
+    }
+    public synchronized void reconfigure(OkxClient okx,AiClient ai) {
+        if(enabled) throw new IllegalStateException("请先暂停自动交易");
+        this.okx=okx;this.ai=ai;snapshot=null;lastError="";
     }
     public Map<String,Object> status() {
         Map<String,Object> result=new LinkedHashMap<>();
@@ -53,12 +54,11 @@ public class TradingService {
             return null;
         });
     }
-    @Scheduled(fixedDelayString="${pilot.poll-ms}")
     public synchronized void tick() {
         if(!okx.configured()) return;
         try {
             withLease(()->{
-                boolean monitor=enabled || !store.unsettled().isEmpty() || (snapshot!=null && !snapshot.positions().isEmpty());
+                boolean monitor=enabled || snapshot==null || !store.unsettled().isEmpty() || !snapshot.positions().isEmpty();
                 if(monitor) {
                     reconcile();snapshot=okx.snapshot();verifyProtection(snapshot);
                     if(!store.unsettled().isEmpty()) throw new IllegalStateException("订单尚未最终确认，已暂停；后台继续查单");

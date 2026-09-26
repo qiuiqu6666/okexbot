@@ -2,8 +2,6 @@ package com.okxpilot;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -13,19 +11,17 @@ import java.util.List;
 import java.util.Map;
 import static com.okxpilot.Domain.*;
 
-@Component
 public class AiClient {
     private final ObjectMapper json;
     private final String baseUrl,key,model;
     private final HttpClient http=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
-    public AiClient(ObjectMapper json,@Value("${pilot.ai-base-url}") String baseUrl,
-                    @Value("${pilot.ai-key}") String key,@Value("${pilot.ai-model}") String model) {
+    public AiClient(ObjectMapper json,String baseUrl,String key,String model) {
         this.json=json;this.baseUrl=baseUrl.replaceAll("/+$","");this.key=key;this.model=model;
     }
     public boolean configured() { return !key.isBlank() && !model.isBlank(); }
     public String model() { return model; }
     public Decision decide(Object context) {
-        if(!configured()) throw new IllegalStateException("请在服务端配置 AI 接口、密钥和模型");
+        if(!configured()) throw new IllegalStateException("请在设置中配置自己的 AI 接口、密钥和模型");
         URI target=URI.create(baseUrl+"/chat/completions");
         if(!"https".equals(target.getScheme()) && !("http".equals(target.getScheme()) && List.of("localhost","127.0.0.1").contains(target.getHost())))
             throw new IllegalStateException("AI 接口必须使用 HTTPS，本机服务可用 HTTP");

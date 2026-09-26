@@ -14,13 +14,18 @@ import static org.assertj.core.api.Assertions.*;
 @SpringBootTest(properties={"pilot.operator-token=mysql-test-token-01234567890123456789","pilot.poll-ms=3600000"})
 @EnabledIfEnvironmentVariable(named="TEST_MYSQL_URL",matches=".+")
 class MySqlSmokeTest {
-    @Autowired Store store;
+    @Autowired Store stores;
+    @Autowired AuthService auth;
     @DynamicPropertySource static void mysql(DynamicPropertyRegistry p) {
         p.add("spring.datasource.url",()->System.getenv("TEST_MYSQL_URL"));
         p.add("spring.datasource.username",()->System.getenv("TEST_MYSQL_USER"));
         p.add("spring.datasource.password",()->System.getenv("TEST_MYSQL_PASSWORD"));
     }
     @Test void migratesAndPersistsConfigurationOrdersAndLeaseOnMySql(){
+        String username="mysql"+System.currentTimeMillis();
+        var account=auth.register(new AuthService.Credentials(username,"mysql-test-password"),username);
+        Store store=stores.forUser(account.user().id());
+        assertThat(auth.authenticate("Bearer "+account.token()).username()).isEqualTo(username);
         Settings settings=Settings.defaults();store.settings(settings);assertThat(store.settings()).isEqualTo(settings);
         String id="mysql"+System.currentTimeMillis();
         Decision d=new Decision(Action.CLOSE,"BTC-USDT-SWAP",null,null,null,null,"MySQL persistence acceptance");

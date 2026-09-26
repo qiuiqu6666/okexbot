@@ -2,8 +2,6 @@ package com.okxpilot;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.net.URI;
@@ -20,13 +18,11 @@ import java.util.List;
 import java.util.Map;
 import static com.okxpilot.Domain.*;
 
-@Component
 public class OkxClient {
     private final String key, secret, passphrase;
     private final ObjectMapper json;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
-    public OkxClient(@Value("${pilot.okx-key}") String key, @Value("${pilot.okx-secret}") String secret,
-                     @Value("${pilot.okx-passphrase}") String passphrase, ObjectMapper json) {
+    public OkxClient(String key,String secret,String passphrase,ObjectMapper json) {
         this.key=key; this.secret=secret; this.passphrase=passphrase; this.json=json;
     }
     public boolean configured() { return !key.isBlank() && !secret.isBlank() && !passphrase.isBlank(); }
@@ -38,7 +34,7 @@ public class OkxClient {
         } catch (Exception e) { throw new IllegalStateException("签名失败"); }
     }
     public JsonNode call(String method, String path, Object payload, boolean authenticated) {
-        if (authenticated && !configured()) throw new IllegalStateException("请在服务端配置 OKX 模拟盘凭据");
+        if (authenticated && !configured()) throw new IllegalStateException("请在设置中配置自己的 OKX 模拟盘凭据");
         try {
             String body = payload == null ? "" : json.writeValueAsString(payload);
             HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("https://www.okx.com"+path))

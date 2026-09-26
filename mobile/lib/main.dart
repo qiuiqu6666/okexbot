@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+import 'api.dart';
+import 'auth_page.dart';
+import 'connection_editor.dart';
+export 'api.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
 void main() => runApp(const PilotApp());
 const mint = Color(0xFF9EEBC5),
@@ -10,7 +12,8 @@ const mint = Color(0xFF9EEBC5),
     panel = Color(0xFF182326);
 
 class PilotApp extends StatelessWidget {
-  const PilotApp({super.key});
+  final PilotApi Function(String)? createApi;
+  const PilotApp({super.key, this.createApi});
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: '仓位领航',
@@ -35,177 +38,10 @@ class PilotApp extends StatelessWidget {
         indicatorColor: Color(0xFF2A4840),
       ),
     ),
-    home: const ConnectionPage(),
-  );
-}
-
-class ApiError implements Exception {
-  final String message;
-  ApiError(this.message);
-  @override
-  String toString() => message;
-}
-
-class PilotApi {
-  final String baseUrl, token;
-  final http.Client client;
-  PilotApi(this.baseUrl, this.token, {http.Client? client})
-    : client = client ?? http.Client();
-  Future<dynamic> request(
-    String path, {
-    String method = 'GET',
-    Object? body,
-  }) async {
-    final req = http.Request(method, Uri.parse('$baseUrl/api$path'));
-    req.headers.addAll({
-      'Authorization': 'Bearer $token',
-      'Content-Type': 'application/json',
-    });
-    if (body != null) req.body = jsonEncode(body);
-    try {
-      final response = await (() async => http.Response.fromStream(
-        await client.send(req),
-      ))().timeout(const Duration(seconds: 150));
-      final dynamic data = jsonDecode(utf8.decode(response.bodyBytes));
-      if (response.statusCode >= 400) {
-        throw ApiError(data is Map ? '${data['message'] ?? '请求失败'}' : '请求失败');
-      }
-      return data;
-    } on ApiError {
-      rethrow;
-    } catch (_) {
-      throw ApiError('连接中断或响应无效。操作结果请刷新记录确认，不要重复提交。');
-    }
-  }
-
-  void close() => client.close();
-}
-
-class ConnectionPage extends StatefulWidget {
-  const ConnectionPage({super.key});
-  @override
-  State<ConnectionPage> createState() => _ConnectionPageState();
-}
-
-class _ConnectionPageState extends State<ConnectionPage> {
-  final address = TextEditingController(
-        text: const String.fromEnvironment('PILOT_URL'),
-      ),
-      token = TextEditingController();
-  bool busy = false;
-  String? error;
-  @override
-  void dispose() {
-    address.dispose();
-    token.dispose();
-    super.dispose();
-  }
-
-  Future<void> connect() async {
-    final url = address.text.trim().replaceAll(RegExp(r'/+$'), '');
-    final uri = Uri.tryParse(url);
-    if (uri == null ||
-        !uri.hasAuthority ||
-        uri.userInfo.isNotEmpty ||
-        uri.hasQuery ||
-        uri.hasFragment ||
-        !(uri.scheme == 'https' || (kDebugMode && uri.scheme == 'http')) ||
-        token.text.trim().length < 32) {
-      setState(() => error = '请输入 HTTPS 服务地址和至少 32 字符的访问令牌；调试版支持本地 HTTP。');
-      return;
-    }
-    setState(() {
-      busy = true;
-      error = null;
-    });
-    final api = PilotApi(url, token.text.trim());
-    try {
-      final status = await api.request('/status') as Map<String, dynamic>;
-      if (!mounted) {
-        api.close();
-        return;
-      }
-      token.clear();
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => Dashboard(api: api, initialStatus: status),
-        ),
-      );
-    } catch (e) {
-      api.close();
-      if (mounted) setState(() => error = '$e');
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    body: SafeArea(
-      child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(28),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 460),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.explore_outlined, size: 52, color: mint),
-                const SizedBox(height: 28),
-                const Text(
-                  '仓位领航',
-                  style: TextStyle(fontSize: 34, fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(height: 10),
-                const Text(
-                  '让决策有依据，让风险有边界。',
-                  style: TextStyle(color: muted, fontSize: 16),
-                ),
-                const SizedBox(height: 32),
-                const BadgeLabel('OKX 模拟盘 · AI 仓位管理'),
-                const SizedBox(height: 24),
-                TextField(
-                  controller: address,
-                  autocorrect: false,
-                  keyboardType: TextInputType.url,
-                  decoration: const InputDecoration(
-                    labelText: '服务地址',
-                    hintText: 'https://your-server.example',
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: token,
-                  obscureText: true,
-                  autocorrect: false,
-                  enableSuggestions: false,
-                  decoration: const InputDecoration(
-                    labelText: '访问令牌',
-                    helperText: '令牌仅保存在本次会话中',
-                  ),
-                ),
-                const SizedBox(height: 20),
-                if (error != null) Notice(error!, error: true),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton(
-                    onPressed: busy ? null : connect,
-                    child: Padding(
-                      padding: const EdgeInsets.all(14),
-                      child: Text(busy ? '正在连接…' : '连接控制台'),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                const Text(
-                  '交易由你的服务器执行。OKX 和模型密钥只在服务器配置，手机不保存交易密钥。',
-                  style: TextStyle(color: muted, height: 1.6),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+    home: AuthPage(
+      createApi: createApi,
+      dashboardBuilder: (api, status) =>
+          Dashboard(api: api, initialStatus: status),
     ),
   );
 }
@@ -220,18 +56,42 @@ class Dashboard extends StatefulWidget {
 
 class _DashboardState extends State<Dashboard> {
   late Map<String, dynamic> status;
+  Map<String, dynamic>? connections;
   List<dynamic> events = [], orders = [];
   Timer? timer;
   int tab = 0;
   bool busy = false, refreshing = false, stopping = false;
+  bool leaving = false;
   String? error;
   DateTime? syncedAt;
   @override
   void initState() {
     super.initState();
     status = widget.initialStatus;
+    widget.api.onUnauthorized = () => leave('登录已过期，请重新登录');
     refresh();
     timer = Timer.periodic(const Duration(seconds: 10), (_) => refresh());
+  }
+
+  void leave([String? message]) {
+    if (!mounted || leaving) return;
+    leaving = true;
+    timer?.cancel();
+    final route = ModalRoute.of(context);
+    final navigator = Navigator.of(context);
+    navigator.popUntil((r) => r == route || r.isFirst);
+    navigator.pop(message);
+  }
+
+  Future<void> logout() async {
+    if (!await confirm('退出登录？', '退出登录不会停止服务器上的自动交易。需要停止时请先点击暂停。')) return;
+    if (!mounted || leaving) return;
+    try {
+      await widget.api.logout();
+      leave();
+    } catch (e) {
+      if (mounted && !leaving) setState(() => error = '$e');
+    }
   }
 
   @override
@@ -242,19 +102,21 @@ class _DashboardState extends State<Dashboard> {
   }
 
   Future<void> refresh() async {
-    if (refreshing || busy) return;
+    if (refreshing || busy || leaving) return;
     refreshing = true;
     try {
       final results = await Future.wait([
         widget.api.request('/status'),
         widget.api.request('/events'),
         widget.api.request('/orders'),
+        widget.api.request('/connections'),
       ]);
       if (mounted) {
         setState(() {
           status = results[0] as Map<String, dynamic>;
           events = results[1] as List;
           orders = results[2] as List;
+          connections = results[3] as Map<String, dynamic>;
           syncedAt = DateTime.now();
           error = null;
         });
@@ -266,20 +128,20 @@ class _DashboardState extends State<Dashboard> {
     }
   }
 
-  Future<void> act(
+  Future<bool> act(
     String path, {
     Object? body,
     String method = 'POST',
     String success = '操作已完成',
   }) async {
-    if (busy) return;
+    if (busy || leaving) return false;
     setState(() {
       busy = true;
       error = null;
     });
     try {
       final result = await widget.api.request(path, method: method, body: body);
-      if (!mounted) return;
+      if (!mounted || leaving) return false;
       if (path == '/preview') {
         await showDialog<void>(
           context: context,
@@ -317,8 +179,10 @@ class _DashboardState extends State<Dashboard> {
           context,
         ).showSnackBar(SnackBar(content: Text(success)));
       }
+      return true;
     } catch (e) {
       if (mounted) setState(() => error = '$e');
+      return false;
     } finally {
       if (mounted) {
         final savedError = error;
@@ -370,13 +234,8 @@ class _DashboardState extends State<Dashboard> {
       actions: [
         const BadgeLabel('模拟盘'),
         IconButton(
-          tooltip: '断开控制台（不会暂停交易）',
-          onPressed: () async {
-            if (await confirm('断开控制台？', '断开手机不会停止服务器上的自动交易。需要停止时请先点击暂停。') &&
-                context.mounted) {
-              Navigator.pop(context);
-            }
-          },
+          tooltip: '退出登录',
+          onPressed: logout,
           icon: const Icon(Icons.logout, size: 20),
         ),
       ],
@@ -560,7 +419,7 @@ class _DashboardState extends State<Dashboard> {
       ),
       const SizedBox(height: 16),
       if (status['okxConfigured'] != true || status['aiConfigured'] != true)
-        const Notice('连接尚未就绪。请在服务器配置 OKX 模拟盘凭据与模型接口，然后重启服务。'),
+        const Notice('连接尚未就绪。请在“设置”中保存自己的 OKX 模拟盘凭据与模型接口。'),
       const Text(
         '暂停会阻止后续自动指令，已提交订单仍可能成交，已有止盈止损保留。',
         style: TextStyle(color: muted, height: 1.6, fontSize: 12),
@@ -760,6 +619,8 @@ class _DashboardState extends State<Dashboard> {
     Surface(
       child: Column(
         children: [
+          infoRow('当前用户', widget.api.username),
+          infoRow('服务器', widget.api.baseUrl),
           infoRow('交易环境', 'OKX 模拟盘'),
           infoRow('OKX 凭据', status['okxConfigured'] == true ? '已配置' : '未配置'),
           infoRow('模型接口', status['aiConfigured'] == true ? '已配置' : '未配置'),
@@ -767,6 +628,20 @@ class _DashboardState extends State<Dashboard> {
         ],
       ),
     ),
+    const SizedBox(height: 16),
+    if (connections != null)
+      Surface(
+        child: ConnectionEditor(
+          initial: connections!,
+          enabled: !busy && status['enabled'] != true,
+          onSave: (value) => act(
+            '/connections',
+            method: 'PUT',
+            body: value,
+            success: '账户连接已保存',
+          ),
+        ),
+      ),
     const SizedBox(height: 16),
     SettingsEditor(
       key: ValueKey(jsonEncode(status['settings'])),
@@ -776,7 +651,7 @@ class _DashboardState extends State<Dashboard> {
           act('/settings', method: 'PUT', body: s, success: '风险参数已保存'),
     ),
     const SizedBox(height: 16),
-    const Notice('修改参数前请暂停自动交易。模型和 OKX 密钥在服务器环境变量中设置，不会通过此页面传回手机。'),
+    const Notice('修改参数或连接前请暂停自动交易。每个用户应使用独立的 OKX 模拟账户。'),
   ];
 }
 

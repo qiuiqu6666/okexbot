@@ -6,37 +6,48 @@ import 'package:okx_pilot/main.dart' as app;
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  testWidgets('Android connects to Java/MySQL and displays all four pages', (
-    tester,
-  ) async {
-    const token = String.fromEnvironment('TEST_OPERATOR_TOKEN');
-    const url = String.fromEnvironment(
-      'TEST_BACKEND_URL',
-      defaultValue: 'http://10.0.2.2:18081',
+  testWidgets('register logout and login against Java MySQL', (tester) async {
+    const url = String.fromEnvironment('TEST_BACKEND_URL');
+    expect(
+      url.startsWith('http://127.0.0.1:'),
+      isTrue,
+      reason: 'Acceptance must only use the local forwarded backend',
     );
-    expect(token.length, greaterThanOrEqualTo(32));
+    final username = 'android${DateTime.now().millisecondsSinceEpoch}';
+    const password = 'local-acceptance-password';
+    Future<void> submit() async {
+      FocusManager.instance.primaryFocus?.unfocus();
+      await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('authSubmit')));
+      await tester.tap(find.byKey(const Key('authSubmit')));
+      for (
+        var i = 0;
+        i < 80 && find.text('USDT 账户权益').evaluate().isEmpty;
+        i++
+      ) {
+        await tester.pump(const Duration(milliseconds: 250));
+      }
+      await tester.pumpAndSettle();
+    }
+
     app.main();
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField).at(0), url);
-    await tester.enterText(find.byType(TextField).at(1), token);
-    FocusManager.instance.primaryFocus?.unfocus();
-    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
-    await tester.pump(const Duration(seconds: 1));
+    await tester.ensureVisible(find.text('服务器设置'));
+    await tester.tap(find.text('服务器设置'));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('连接控制台'));
-    await tester.tap(find.text('连接控制台'));
-    // Network completion is not represented by animation settling.
-    for (var i = 0; i < 60 && find.text('USDT 账户权益').evaluate().isEmpty; i++) {
-      await tester.pump(const Duration(milliseconds: 250));
-    }
-    if (find.text('USDT 账户权益').evaluate().isEmpty) {
-      await binding.convertFlutterSurfaceToImage();
-      await tester.pumpAndSettle();
-      await binding.takeScreenshot('connection-error');
-    }
+    await tester.enterText(find.byKey(const Key('serverAddress')), url);
+    await tester.tap(find.text('服务器设置'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('authToggle')));
+    await tester.tap(find.byKey(const Key('authToggle')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('username')), username);
+    await tester.enterText(find.byKey(const Key('password')), password);
+    await tester.enterText(find.byKey(const Key('confirmPassword')), password);
+    await submit();
     expect(find.text('USDT 账户权益'), findsOneWidget);
     expect(find.text('自动交易已暂停'), findsOneWidget);
-    expect(tester.takeException(), isNull);
     await binding.convertFlutterSurfaceToImage();
     await tester.pumpAndSettle();
     await binding.takeScreenshot('overview');
@@ -48,12 +59,35 @@ void main() {
     expect(find.text('交易与决策记录'), findsOneWidget);
     await tester.tap(find.text('设置'));
     await tester.pumpAndSettle();
-    expect(find.text('运行设置'), findsOneWidget);
+    expect(find.text(username), findsOneWidget);
     expect(find.text('未配置'), findsNWidgets(2));
-    expect(tester.takeException(), isNull);
     await binding.takeScreenshot('settings');
-    await tester.tap(find.text('总览'));
+    await tester.tap(find.byTooltip('退出登录'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('确认'));
+    for (var i = 0; i < 40 && find.text('欢迎回来').evaluate().isEmpty; i++) {
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+    await tester.pumpAndSettle();
+    expect(find.text('欢迎回来'), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('password')), password);
+    await submit();
+    expect(find.text('USDT 账户权益'), findsOneWidget);
+    await tester.tap(find.byTooltip('退出登录'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认'));
+    for (var i = 0; i < 40 && find.text('欢迎回来').evaluate().isEmpty; i++) {
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('username')), '');
+    await tester.pumpAndSettle();
+    await binding.takeScreenshot('login');
+    await tester.ensureVisible(find.byKey(const Key('authToggle')));
+    await tester.tap(find.byKey(const Key('authToggle')));
+    await tester.pumpAndSettle();
+    await binding.takeScreenshot('register');
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
   });
