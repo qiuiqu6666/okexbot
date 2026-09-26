@@ -7,7 +7,9 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.server.ResponseStatusException;
 import java.io.IOException;
@@ -31,6 +33,23 @@ public class Api {
     @PostMapping("/auth/logout") public Object logout(HttpServletRequest r){auth.logout(r.getHeader("Authorization"));return Map.of("loggedOut",true);}
     @GetMapping("/auth/me") public Object me(HttpServletRequest r){return user(r);}
     @GetMapping("/status") public Object status(HttpServletRequest r){return engine(r).status();}
+    @GetMapping(value="/stream",produces=MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter stream(HttpServletRequest r) {
+        TradingService engine=engine(r);
+        SseEmitter emitter=new SseEmitter(0L);
+        Thread pump=new Thread(() -> {
+            try {
+                while(!Thread.currentThread().isInterrupted()) {
+                    emitter.send(SseEmitter.event().name("status").data(engine.status()));
+                    Thread.sleep(2000);
+                }
+            } catch(Exception e) { emitter.complete(); }
+        },"pilot-stream");
+        pump.setDaemon(true);
+        emitter.onCompletion(pump::interrupt);emitter.onTimeout(pump::interrupt);emitter.onError(error->pump.interrupt());
+        pump.start();
+        return emitter;
+    }
     @PostMapping("/sync") public Object sync(HttpServletRequest r){return engine(r).refresh();}
     @PutMapping("/settings") public Object settings(@RequestBody Settings s,HttpServletRequest r){engine(r).settings(s);return engine(r).status();}
     @PutMapping("/risk-policy") public Object riskPolicy(@RequestBody RiskPolicy p,HttpServletRequest r){engine(r).riskPolicy(p);return engine(r).status();}
@@ -44,11 +63,15 @@ public class Api {
         if(environment(r)==TradingEnvironment.LIVE && (body==null || !body.confirmLive())) throw new IllegalArgumentException("开启实盘自动交易必须明确确认真实资金交易");
         engine(r).enable();return engine(r).status();}
     public record StartRequest(boolean confirmLive) {}
-    @PostMapping("/pause") public Object pause(HttpServletRequest r){engine(r).pause();return engine(r).status();}
+    @PostMapping("/pause") public Object pause(HttpServletRequest r){
+        TradingService engine=engine(r);boolean was=engine.running();engine.pause();
+        if(was) trading.armSwitchRestore(user(r).id(),environment(r)); else trading.disarmSwitchRestore(user(r).id());
+        return engine.status();
+    }
     @PostMapping("/preview") public Decision preview(HttpServletRequest r){return engine(r).preview();}
     @PostMapping("/reconcile") public Object reconcile(HttpServletRequest r){engine(r).reconcileNow();return engine(r).status();}
-    @PostMapping("/positions/{instrument}/close") public Object close(@PathVariable String instrument,HttpServletRequest r){engine(r).close(instrument,false);return Map.of("accepted",true);}
-    @PostMapping("/positions/{instrument}/reduce") public Object reduce(@PathVariable String instrument,HttpServletRequest r){engine(r).close(instrument,true);return Map.of("accepted",true);}
+    @PostMapping("/positions/{instrument}/close") public Object close(@PathVariable String instrument,@RequestParam(required=false) String side,HttpServletRequest r){engine(r).close(instrument,false,side);return Map.of("accepted",true);}
+    @PostMapping("/positions/{instrument}/reduce") public Object reduce(@PathVariable String instrument,@RequestParam(required=false) String side,HttpServletRequest r){engine(r).close(instrument,true,side);return Map.of("accepted",true);}
     @GetMapping("/orders") public Object orders(HttpServletRequest r){return stores.forUser(user(r).id(),environment(r)).orders();}
     @GetMapping("/events") public Object events(HttpServletRequest r){return stores.forUser(user(r).id(),environment(r)).events();}
     @GetMapping("/analysis") public Object analysis(HttpServletRequest r){return stores.forUser(user(r).id(),environment(r)).analyses();}
@@ -57,7 +80,8 @@ public class Api {
 @Component
 class SessionAuth extends OncePerRequestFilter {
     private final AuthService auth;
-    SessionAuth(AuthService auth){this.auth=auth;}
+    private final TradingRegistry trading;
+    SessionAuth(AuthService auth,TradingRegistry trading){this.auth=auth;this.trading=trading;}
     @Override protected void doFilterInternal(HttpServletRequest req,HttpServletResponse res,FilterChain chain) throws IOException,ServletException {
         res.setHeader("Cache-Control","no-store");res.setHeader("X-Content-Type-Options","nosniff");
         String path=req.getRequestURI();
@@ -66,6 +90,8 @@ class SessionAuth extends OncePerRequestFilter {
         if(!anonymous) {
             try{req.setAttribute("pilot.user",auth.authenticate(req.getHeader("Authorization")));}
             catch(ResponseStatusException e){res.setStatus(401);res.setContentType("application/json;charset=UTF-8");res.getWriter().write("{\"message\":\"登录已失效，请重新登录\"}");return;}
+            AuthService.User current=(AuthService.User)req.getAttribute("pilot.user");
+            if(current!=null) try{trading.restoreIfSwitched(current.id(),TradingEnvironment.parse(req.getHeader("X-Trading-Environment")));}catch(RuntimeException ignored){}
         }
         chain.doFilter(req,res);
     }

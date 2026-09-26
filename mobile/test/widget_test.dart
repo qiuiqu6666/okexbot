@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:okx_pilot/main.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 const token = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG';
 http.Response response(Object body, [int status = 200]) => http.Response(
@@ -28,6 +29,7 @@ final status = {
 };
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
   test('address supports direct IP and rejects paths/embedded credentials', () {
     expect(
       normalizeServerAddress(' 47.76.193.239:8080/ '),
@@ -118,6 +120,33 @@ void main() {
           .text,
       isEmpty,
     );
+  });
+  testWidgets('saved session opens the dashboard without logging in again', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      SessionStore.urlKey: 'http://47.76.193.239:8080',
+      SessionStore.tokenKey: token,
+      SessionStore.userKey: 'tester',
+      SessionStore.envKey: 'DEMO',
+    });
+    final client = MockClient((req) async {
+      expect(req.headers['Authorization'], 'Bearer $token');
+      if (req.url.path == '/api/auth/me') {
+        return response({
+          'id': 1,
+          'username': 'tester',
+        });
+      }
+      if (req.url.path == '/api/status') return response(status);
+      return response([]);
+    });
+    await tester.pumpWidget(
+      PilotApp(createApi: (url) => PilotApi(url, '', client)),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('USDT 账户权益'), findsOneWidget);
+    expect(find.text('欢迎回来'), findsNothing);
   });
   testWidgets('expired session returns to login once', (tester) async {
     final client = MockClient((req) async {

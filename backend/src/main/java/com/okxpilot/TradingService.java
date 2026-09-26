@@ -5,6 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import static com.okxpilot.Domain.*;
 
 public class TradingService {
@@ -20,19 +24,30 @@ public class TradingService {
     private volatile String lastError="";
     private volatile Instant lastCycle;
     private volatile Instant nextCycle=Instant.EPOCH;
+    private final Map<String,BigDecimal> analyzedPrice=new HashMap<>();
+    private final Map<String,BigDecimal> analyzedPnl=new HashMap<>();
+    private String attentionReason="到达分析间隔";
+    private String nearStop="";
     private volatile Snapshot snapshot;
+    private volatile Instant quotedAt=Instant.EPOCH;
+    private volatile List<Map<String,Object>> quotes=List.of();
+    private final Object quoteLock=new Object();
+    private final AtomicInteger pauseGeneration=new AtomicInteger();
+    private static final ScheduledExecutorService pauseAudit=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"pause-audit");t.setDaemon(true);return t;});
     public TradingService(Store store,OkxClient okx,AiClient ai,RiskEngine risk,ObjectMapper json,NewsService news) {
         this.store=store;this.okx=okx;this.ai=ai;this.risk=risk;this.json=json;this.news=news;this.guard=new TradingGuard(store);
+        if(store.autoTrading()) {enabled=true;nextCycle=Instant.now();store.audit("CONTROL","服务重启，已恢复自动交易",Map.of());}
     }
     public synchronized void reconfigure(OkxClient okx,AiClient ai) {
         if(enabled) throw new IllegalStateException("请先暂停自动交易");
         this.okx=okx;this.ai=ai;snapshot=null;lastError="";
     }
     public Map<String,Object> status() {
+        refreshQuotes();
         Map<String,Object> result=new LinkedHashMap<>();
         result.put("environment",store.environment().name());result.put("enabled",enabled);result.put("okxConfigured",okx.configured());
         result.put("aiConfigured",ai.configured());result.put("model",ai.model());result.put("lastError",lastError);
-        result.put("lastCycle",lastCycle);result.put("nextCycle",enabled?nextCycle:null);result.put("snapshot",snapshot);
+        result.put("lastCycle",lastCycle);result.put("nextCycle",enabled?nextCycle:null);result.put("snapshot",snapshot);result.put("quotes",quotes);
         result.put("settings",store.settings());result.put("riskPolicy",store.riskPolicy());
         result.put("analyzing",analyzing);
         RiskState state=store.riskState();result.put("riskStatus",Map.of("haltReason",state.haltReason,"peakEquity",state.peakEquity,
@@ -59,7 +74,6 @@ public class TradingService {
     public NewsService.Evidence news(){return news.evidence(store.settings().instruments());}
     public java.util.List<String> instruments(){return okx.instruments();}
     public synchronized void settings(Settings settings) {
-        if(enabled) throw new IllegalStateException("请先暂停自动交易再修改参数");
         settings.validate();
         withLease(()->{
             if(!settings.instruments().containsAll(store.riskState().positions.keySet())) throw new IllegalStateException("不能移除仍有策略仓位的合约");
@@ -72,8 +86,18 @@ public class TradingService {
         return withLease(()->{checkAccount();reconcile();snapshot=okx.snapshot();guard.sync(snapshot,okx);guard.observeEquity(snapshot);return status();});
     }
     // Stopping is intentionally not synchronized: it must be visible while an AI request is in flight.
+    public boolean running(){return enabled;}
     public void pause() {
-        enabled=false;store.audit("CONTROL","已暂停自动交易，已有保护单保留",Map.of());
+        boolean was=enabled;enabled=false;store.autoTrading(false);
+        int generation=pauseGeneration.incrementAndGet();
+        if(!was){store.audit("CONTROL","已暂停自动交易，已有保护单保留",Map.of());return;}
+        pauseAudit.schedule(()->{if(pauseGeneration.get()==generation && !enabled) store.audit("CONTROL","已暂停自动交易，已有保护单保留",Map.of());},3,TimeUnit.SECONDS);
+    }
+    public void keepRunning() {
+        pauseGeneration.incrementAndGet();
+        if(enabled) return;
+        enabled=true;lastError="";nextCycle=Instant.now();store.autoTrading(true);
+        store.audit("CONTROL","切换查看环境，自动交易继续",Map.of());
     }
     public synchronized void enable() {
         if(!okx.configured() || !ai.configured()) throw new IllegalStateException("请先配置当前环境的 OKX 和 AI 凭据");
@@ -82,7 +106,7 @@ public class TradingService {
             if(!store.unsettled().isEmpty()) throw new IllegalStateException("有待确认订单，需先核对订单状态");
             snapshot=okx.snapshot();guard.sync(snapshot,okx);guard.observeEquity(snapshot);verifyProtection(snapshot);
             store.settings().validate();store.baseline(snapshot.equity());
-            store.audit("CONTROL","已开启自动交易",Map.of());lastError="";nextCycle=Instant.now();enabled=true;
+            store.audit("CONTROL","已开启自动交易",Map.of());store.autoTrading(true);lastError="";nextCycle=Instant.now();enabled=true;
             return null;
         });
     }
@@ -92,17 +116,21 @@ public class TradingService {
             withLease(()->{
                 checkAccount();reconcile();snapshot=okx.snapshot();guard.sync(snapshot,okx);guard.observeEquity(snapshot);verifyProtection(snapshot);
                 if(!store.unsettled().isEmpty()) throw new IllegalStateException("订单尚未最终确认，已暂停；后台继续查单");
-                if(enabled && !Instant.now().isBefore(nextCycle)) {
-                    cycle(true);nextCycle=Instant.now().plusSeconds(store.settings().intervalSeconds());
+                boolean scheduled=!Instant.now().isBefore(nextCycle);
+                boolean urgent=enabled && !scheduled && attentionNeeded(store.settings());
+                if(enabled && MarketAttention.shouldAnalyze(scheduled,urgent,lastCycle,Instant.now())) {
+                    if(scheduled) attentionReason="到达分析间隔";
+                    cycle(true);nextCycle=MarketAttention.nextSlot(Instant.now(),store.settings().intervalSeconds());
                 }
                 return null;
             });
         } catch(Exception e) {
             enabled=false;lastError=safeMessage(e);
-            try {store.audit("ERROR",lastError,Map.of());} catch(Exception ignored) { /* Remain paused if persistence fails. */ }
+            try {store.autoTrading(false);store.audit("ERROR",lastError,Map.of());} catch(Exception ignored) { /* Remain paused if persistence fails. */ }
         }
     }
-    public synchronized Decision preview() { return withLease(()->cycle(false)); }
+    public synchronized Decision preview() { return withLease(()->{attentionReason="手动预览";return cycle(false);}); }
+    void rememberAnalyzedAt(Instant when) { lastCycle=when; }
     private Decision cycle(boolean execute) {
         if(execute && !enabled) throw new IllegalStateException("自动交易已暂停");
         Settings settings=store.settings();checkAccount();reconcile();
@@ -111,15 +139,21 @@ public class TradingService {
         Map<String,Object> markets=new LinkedHashMap<>();
         for(String id:settings.instruments()) {
             store.renew();
-            markets.put(id,Map.of("instrument",okx.instrument(id),"price",okx.price(id),"candlesNewestFirst",okx.candles(id)));
+            var frames=new LinkedHashMap<String,Object>();
+            frames.put("5m",timeframe(okx.candles(id,"5m")));
+            for(String bar:List.of("15m","1H")) {try{frames.put(bar,timeframe(okx.candles(id,bar)));}catch(RuntimeException e){frames.put(bar,Map.of("available",false));}}
+            var market=new LinkedHashMap<String,Object>();
+            market.put("instrument",okx.instrument(id));market.put("price",okx.price(id));market.put("timeframes",frames);
+            markets.put(id,market);
         }
+        rememberMarket(markets);
         store.renew();
         var evidence=news.evidence(settings.instruments());
         store.renew();
         store.audit("NEWS_EVIDENCE",evidence.message(),evidence);
         Decision d;
         analyzing=true;
-        try {d=ai.decide(Map.of("settings",settings,"riskPolicy",store.riskPolicy(),"account",snapshot,"markets",markets,"news",evidence,"environment",store.environment(),"now",Instant.now()));}
+        try {d=ai.decide(Map.of("settings",settings,"riskPolicy",store.riskPolicy(),"account",snapshot,"markets",markets,"news",evidence,"environment",store.environment(),"now",Instant.now(),"trigger",attentionReason));}
         catch(IllegalArgumentException | IllegalStateException e) {
             return skipped(settings,safeMessage(e));
         }
@@ -144,7 +178,7 @@ public class TradingService {
             try {
             if(!enabled) throw new IllegalStateException("用户已暂停，模型结果不执行");
             if(!plan.reduceOnly()) verifyProtection(snapshot);
-            execute(d,plan,settings,true);
+            execute(d,plan,settings,true,false,null);
             } catch(RuntimeException e) {
                 store.audit("AI_EXECUTION_FAILED","执行未完成，请核对订单状态",Map.of("decision",d,"reason",safeMessage(e)));throw e;
             }
@@ -160,7 +194,8 @@ public class TradingService {
         store.audit("AI_REJECTED",message,Map.of("decision",d,"reason",message));
         return new Decision(Action.HOLD,settings.instruments().get(0),null,null,null,null,"本轮跳过："+message);
     }
-    private void execute(Decision d,Plan plan,Settings settings,boolean automatic) {
+    private void execute(Decision d,Plan plan,Settings settings,boolean automatic) { execute(d,plan,settings,automatic,false,null); }
+    private void execute(Decision d,Plan plan,Settings settings,boolean automatic,boolean manual,String side) {
         store.renew();
         if(automatic && !enabled) throw new IllegalStateException("用户已暂停，本次指令取消");
         String clientId="p"+UUID.randomUUID().toString().replace("-","").substring(0,29);
@@ -186,7 +221,8 @@ public class TradingService {
         snapshot=okx.snapshot();guard.sync(snapshot,okx);guard.observeEquity(snapshot);
         BigDecimal currentPrice=okx.price(d.instrument());
         Instrument currentInstrument=okx.instrument(d.instrument());
-        Plan current=risk.validate(d,settings,snapshot,currentInstrument,currentPrice,plan.reduceOnly()?BigDecimal.ONE:store.baseline(snapshot.equity()),store.riskPolicy(),okx.hedge());
+        Plan current=manual?risk.manualClose(position(d.instrument(),side),currentInstrument,d.action()==Action.CLOSE?BigDecimal.ONE:d.reduceFraction(),currentPrice)
+                :risk.validate(d,settings,snapshot,currentInstrument,currentPrice,plan.reduceOnly()?BigDecimal.ONE:store.baseline(snapshot.equity()),store.riskPolicy(),okx.hedge());
         if(!current.reduceOnly()) {
             guard.opening(d,current,OkxClient.orderPosSide(okx.hedge(),current.side(),false));verifyProtection(snapshot);
             if(!store.unsettled().isEmpty() || !okx.pendingOrders().isEmpty()) throw new IllegalStateException("账户存在挂单或未确认订单，禁止新增风险");
@@ -196,7 +232,7 @@ public class TradingService {
                         OkxClient.number(algo,"sz").compareTo(p.contracts().abs())!=0)
                     throw new IllegalStateException("账户存在非当前策略保护单的算法挂单，禁止新增风险");
             }
-        } else guard.requireOwned(position(d.instrument()));
+        } else if(!manual) guard.requireOwned(position(d.instrument()));
         risk.validateBook(okx.book(d.instrument()),current,currentPrice,store.riskPolicy());
         body.put("sz",current.contracts().toPlainString());
         body.put("side",current.side());
@@ -214,7 +250,7 @@ public class TradingService {
             String orderId=response.path("ordId").asText();
             if(orderId.isBlank()) throw new IllegalStateException("OKX 未返回订单号");
             store.state(clientId,"ACCEPTED",orderId,"交易所已接受，尚未确认成交");
-            store.audit("ORDER","订单已提交，等待成交对账",Map.of("clientId",clientId,"orderId",orderId));
+            store.audit("ORDER",d.instrument()+" "+TelegramNotifier.actionText(d.action().name())+"，订单已提交，等待成交对账",Map.of("clientId",clientId,"orderId",orderId));
         } catch(OkxClient.Rejected e) {store.state(clientId,"REJECTED",null,e.getMessage());throw e;}
         catch(Exception e) {store.state(clientId,"UNKNOWN",null,"结果不明确，禁止自动重试");throw e;}
     }
@@ -288,20 +324,102 @@ public class TradingService {
             if(!protectedPosition) throw new IllegalStateException(p.instrument()+" 未确认本程序完整保护单，禁止新增风险；可人工减仓/平仓");
         }
     }
-    public synchronized void close(String id,boolean half) {
+    public synchronized void close(String id,boolean half) { close(id,half,null); }
+    public synchronized void close(String id,boolean half,String side) {
         OkxClient.validateId(id);
+        if(side!=null && !side.equals("long") && !side.equals("short")) throw new IllegalArgumentException("持仓方向无效");
         withLease(()->{
             checkAccount();reconcile();
             if(!store.unsettled().isEmpty()) throw new IllegalStateException("有待确认订单，先完成对账");
-            Settings settings=store.settings();snapshot=okx.snapshot();guard.sync(snapshot,okx);guard.observeEquity(snapshot);guard.requireOwned(position(id));
+            snapshot=okx.snapshot();guard.sync(snapshot,okx);guard.observeEquity(snapshot);
+            Position chosen=position(id,side);
             Decision d=new Decision(half?Action.REDUCE:Action.CLOSE,id,null,half?new BigDecimal("0.5"):null,null,null,"用户主动"+(half?"减仓一半":"平仓"));
-            Plan plan=risk.validate(d,settings,snapshot,okx.instrument(id),okx.price(id),BigDecimal.ONE);
-            execute(d,plan,settings,false);return null;
+            Plan plan=risk.manualClose(chosen,okx.instrument(id),d.reduceFraction(),okx.price(id));
+            execute(d,plan,store.settings(),false,true,side);return null;
         });
     }
+    private void refreshQuotes() {
+        if(!okx.configured() || java.time.Duration.between(quotedAt,Instant.now()).abs().toMillis()<2000) return;
+        synchronized(quoteLock) {
+            if(java.time.Duration.between(quotedAt,Instant.now()).abs().toMillis()<2000) return;
+            try {
+                Snapshot next=okx.snapshot();
+                List<Map<String,Object>> rows=new ArrayList<>();
+                for(Position p:next.positions()) {
+                    Map<String,Object> row=new LinkedHashMap<>();
+                    row.put("instrument",p.instrument());row.put("contracts",p.contracts());row.put("markPrice",p.markPrice());
+                    row.put("entryPrice",p.entryPrice());
+                    row.put("unrealizedPnl",p.unrealizedPnl());row.put("notionalUsdt",p.notionalUsdt());row.put("leverage",p.leverage());
+                    row.put("side",p.contracts().signum()>0?"long":"short");
+                    try { row.put("lastPrice",okx.price(p.instrument())); } catch(RuntimeException e) { row.put("lastPrice",p.markPrice()); }
+                    BigDecimal takeProfit=null,stopLoss=null;
+                    try {
+                        JsonNode stops=okx.stops(p.instrument());
+                        if(stops!=null) for(JsonNode stop:stops) {
+                            String posSide=stop.path("posSide").asText("");
+                            boolean longPos=p.contracts().signum()>0;
+                            boolean same=posSide.isBlank() || "net".equals(posSide) || (longPos && "long".equals(posSide)) || (!longPos && "short".equals(posSide));
+                            if(!same || "sell".equals(stop.path("side").asText())!=longPos) continue;
+                            BigDecimal tp=optionalNumber(stop,"tpTriggerPx"),sl=optionalNumber(stop,"slTriggerPx");
+                            if(tp!=null) takeProfit=tp;
+                            if(sl!=null) stopLoss=sl;
+                        }
+                    } catch(RuntimeException ignored) { /* Keep the position visible when protection orders cannot be read. */ }
+                    row.put("takeProfit",takeProfit);row.put("stopLoss",stopLoss);rows.add(row);
+                }
+                snapshot=next;quotes=List.copyOf(rows);
+            } catch(RuntimeException ignored) { /* Keep the previous snapshot when the exchange read fails. */ }
+            finally { quotedAt=Instant.now(); }
+        }
+    }
+    private boolean attentionNeeded(Settings settings) {
+        try {
+            String shock=MarketAttention.priceShock(analyzedPrice,okx.lastPrices(settings.instruments()));
+            if(shock!=null) {attentionReason=shock;return true;}
+            if(snapshot!=null) {
+                String pnl=MarketAttention.pnlShock(snapshot.equity(),analyzedPnl,snapshot.positions());
+                if(pnl!=null) {attentionReason=pnl;return true;}
+                String near=nearProtection();
+                if(near!=null) {attentionReason=near;return true;}
+            }
+        } catch(RuntimeException ignored) {}
+        return false;
+    }
+    private String nearProtection() {
+        String hit=null;
+        for(Position position:snapshot.positions()) {
+            JsonNode stops=okx.stops(position.instrument());
+            if(stops==null) continue;
+            for(JsonNode stop:stops) {
+                if(MarketAttention.near(position.markPrice(),optionalNumber(stop,"tpTriggerPx"))) hit=position.instrument()+" 价格接近止盈";
+                if(MarketAttention.near(position.markPrice(),optionalNumber(stop,"slTriggerPx"))) hit=position.instrument()+" 价格接近止损";
+            }
+        }
+        if(hit==null) {nearStop="";return null;}
+        if(hit.equals(nearStop)) return null;
+        nearStop=hit;return hit;
+    }
+    private void rememberMarket(Map<String,Object> markets) {
+        analyzedPrice.clear();
+        for(var entry:markets.entrySet()) {
+            if(entry.getValue() instanceof Map<?,?> market && market.get("price") instanceof BigDecimal price) analyzedPrice.put(entry.getKey(),price);
+        }
+        analyzedPnl.clear();
+        if(snapshot==null) return;
+        for(Position position:snapshot.positions()) if(position.unrealizedPnl()!=null) analyzedPnl.put(position.instrument(),position.unrealizedPnl());
+    }
+    private static Map<String,Object> timeframe(JsonNode candles){return Map.of("indicators",Indicators.from(candles));}
+    private static BigDecimal optionalNumber(JsonNode node,String key) {
+        String value=node.path(key).asText();
+        if(value.isBlank()) return null;
+        try { return new BigDecimal(value); } catch(NumberFormatException e) { return null; }
+    }
     private void checkAccount(){okx.checkAccountMode();store.bindAccount(okx.accountId());}
-    private Position position(String id) {
+    private Position position(String id) { return position(id,null); }
+    private Position position(String id,String side) {
         List<Position> rows=snapshot.positions().stream().filter(p->p.instrument().equals(id)).toList();
+        if("long".equals(side)) rows=rows.stream().filter(p->p.contracts().signum()>0).toList();
+        if("short".equals(side)) rows=rows.stream().filter(p->p.contracts().signum()<0).toList();
         if(rows.size()>1) throw new IllegalStateException("该合约同时存在多空仓位，无法自动选择");
         if(rows.isEmpty()) throw new IllegalStateException("没有可管理的仓位");
         return rows.get(0);

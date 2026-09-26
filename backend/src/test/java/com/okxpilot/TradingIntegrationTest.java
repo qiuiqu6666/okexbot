@@ -48,7 +48,7 @@ class TradingIntegrationTest {
         when(okx.book(anyString())).thenAnswer(x->json.readTree("{\"asks\":[[\"60001\",\"100\"]],\"bids\":[[\"59999\",\"100\"]],\"ts\":\""+System.currentTimeMillis()+"\"}"));
         when(okx.snapshot()).thenAnswer(x->new Snapshot(Instant.now(),n("1000"),n("500"),List.of()));
         when(okx.instrument(anyString())).thenAnswer(x->new Instrument(x.getArgument(0),n("0.01"),n("0.01"),n("0.01"),n("0.1"),n("1000")));
-        when(okx.price(anyString())).thenReturn(n("60000"));when(okx.candles(anyString())).thenReturn(json.readTree("[]"));
+        when(okx.price(anyString())).thenReturn(n("60000"));when(okx.candles(anyString())).thenReturn(json.readTree("[]"));when(okx.candles(anyString(),anyString())).thenReturn(json.readTree("[]"));
         when(okx.pendingOrders()).thenReturn(json.readTree("[]"));when(okx.stops(anyString())).thenReturn(json.readTree("[]"));
         when(ai.decide(any())).thenReturn(open());when(okx.place(anyMap())).thenReturn(json.readTree("{\"ordId\":\"123\"}"));
     }
@@ -70,6 +70,52 @@ class TradingIntegrationTest {
         assertThat(restarted.status().get("enabled")).isEqualTo(false);
         assertThatThrownBy(restarted::enable).hasMessageContaining("待确认");
         restarted.tick();verify(okx,times(1)).place(anyMap());
+    }
+    @Test void restartRestoresEnabledAutoTrading() {
+        trading.enable();
+        TradingService restarted=new TradingService(store,okx,ai,new RiskEngine(),json,news);
+        assertThat(restarted.status().get("enabled")).isEqualTo(true);
+        restarted.tick();verify(okx,times(1)).place(anyMap());
+    }
+    @Test void switchingEnvironmentKeepsTheOtherSideRunning() throws Exception {
+        db.update("UPDATE user_trading_control SET enabled=1 WHERE user_id=?",account.user().id());
+        String token="Bearer "+account.token();
+        mvc.perform(post("/api/pause").header("Authorization",token).header("X-Trading-Environment","DEMO"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.enabled").value(false));
+        mvc.perform(get("/api/status").header("Authorization",token).header("X-Trading-Environment","LIVE")).andExpect(status().isOk());
+        mvc.perform(get("/api/status").header("Authorization",token).header("X-Trading-Environment","DEMO"))
+                .andExpect(jsonPath("$.enabled").value(true));
+    }
+    @Test void pausingTwiceThenSwitchingLeavesTradingOff() throws Exception {
+        db.update("UPDATE user_trading_control SET enabled=1 WHERE user_id=?",account.user().id());
+        String token="Bearer "+account.token();
+        mvc.perform(post("/api/pause").header("Authorization",token).header("X-Trading-Environment","DEMO")).andExpect(status().isOk());
+        mvc.perform(post("/api/pause").header("Authorization",token).header("X-Trading-Environment","DEMO")).andExpect(status().isOk());
+        mvc.perform(get("/api/status").header("Authorization",token).header("X-Trading-Environment","LIVE")).andExpect(status().isOk());
+        mvc.perform(get("/api/status").header("Authorization",token).header("X-Trading-Environment","DEMO"))
+                .andExpect(jsonPath("$.enabled").value(false));
+    }
+    @Test void priceShockAnalyzesAgainBeforeTheInterval() {
+        when(ai.decide(any())).thenReturn(new Decision(Action.HOLD,"BTC-USDT-SWAP",null,null,null,null,"没有足够机会"));
+        trading.enable();trading.tick();
+        trading.rememberAnalyzedAt(java.time.Instant.now().minusSeconds(61));
+        when(okx.lastPrices(any())).thenReturn(Map.of("BTC-USDT-SWAP",n("61000")));
+        trading.tick();
+        verify(ai,times(2)).decide(any());
+        verify(okx,never()).place(anyMap());
+    }
+    @Test void settingsCanChangeWhileAutoTrading() {
+        trading.enable();
+        trading.settings(new Settings(List.of("BTC-USDT-SWAP","ETH-USDT-SWAP"),n("100"),n("1000"),n("10"),5,20,60));
+        assertThat(store.settings().leverage()).isEqualTo(20);
+        assertThat(store.settings().maxPositions()).isEqualTo(5);
+        assertThat(trading.status().get("enabled")).isEqualTo(true);
+    }
+    @Test void explicitPauseStaysOffAfterRestart() {
+        trading.enable();trading.pause();
+        TradingService restarted=new TradingService(store,okx,ai,new RiskEngine(),json,news);
+        assertThat(restarted.status().get("enabled")).isEqualTo(false);
+        restarted.tick();verify(okx,never()).place(anyMap());
     }
     @Test void pauseDuringModelCallPreventsOrder(){
         when(ai.decide(any())).thenAnswer(x->{trading.pause();return open();});
@@ -110,11 +156,12 @@ class TradingIntegrationTest {
         var argument=org.mockito.ArgumentCaptor.forClass(Map.class);verify(okx).place(argument.capture());
         assertThat(argument.getValue()).containsEntry("reduceOnly",true).containsEntry("side","sell").containsEntry("sz","0.08");
     }
-    @Test void externalPositionCannotBeClosedOrAmended() {
+    @Test void externalIsolatedPositionCanBeClosedManually() {
         when(okx.snapshot()).thenReturn(new Snapshot(Instant.now(),n("1000"),n("900"),List.of(
                 new Position("BTC-USDT-SWAP",n("0.16"),n("60000"),n("96"),n("0"),"isolated","foreign",System.currentTimeMillis()))));
-        assertThatThrownBy(()->trading.close("BTC-USDT-SWAP",false)).hasMessageContaining("非本策略");
-        verify(okx,never()).place(anyMap());
+        trading.close("BTC-USDT-SWAP",false);
+        var argument=org.mockito.ArgumentCaptor.forClass(Map.class);verify(okx).place(argument.capture());
+        assertThat(argument.getValue()).containsEntry("reduceOnly",true).containsEntry("side","sell").containsEntry("sz","0.16");
     }
     @Test void frequencyCooldownAndLossSizingAreServerSide() {
         TradingGuard guard=new TradingGuard(store);Plan plan=new Plan("buy",n("0.1"),false,n("60"));

@@ -21,11 +21,12 @@ public class Store {
     private TradingEnvironment environment=TradingEnvironment.DEMO;
     public TradingEnvironment environment(){return environment;}
     private final String owner=UUID.randomUUID().toString();
-    @Autowired public Store(JdbcTemplate db,ObjectMapper json) { this(db,json,0); }
-    private Store(JdbcTemplate db,ObjectMapper json,long userId) {this.db=db;this.json=json;this.userId=userId;}
+    private final TelegramNotifier telegram;
+    @Autowired public Store(JdbcTemplate db,ObjectMapper json,TelegramNotifier telegram) { this(db,json,0,telegram); }
+    private Store(JdbcTemplate db,ObjectMapper json,long userId,TelegramNotifier telegram) {this.db=db;this.json=json;this.userId=userId;this.telegram=telegram;}
     public Store forUser(long id,TradingEnvironment env) {Store store=forUser(id);store.environment=env;return store;}
     private String sql(String value){return environment.tableSql(value);}
-    public Store forUser(long id) {if(id<=0) throw new IllegalArgumentException("用户无效");return new Store(db,json,id);}
+    public Store forUser(long id) {if(id<=0) throw new IllegalArgumentException("用户无效");return new Store(db,json,id,telegram);}
     private long user() {if(userId<=0) throw new IllegalStateException("必须指定当前用户");return userId;}
     public String encode(Object value) {
         try {return json.writeValueAsString(value);}catch(Exception e){throw new IllegalArgumentException("无法序列化数据");}
@@ -40,9 +41,28 @@ public class Store {
         if(db.update(sql("UPDATE user_bot_config SET payload=? WHERE user_id=?"),encode(value),user())==0)
             db.update(sql("INSERT INTO user_bot_config(user_id,payload) VALUES(?,?)"),user(),encode(value));
     }
+    public boolean autoTrading() {
+        List<Boolean> rows=db.query(sql("SELECT enabled FROM user_trading_control WHERE user_id=?"),(r,n)->r.getBoolean(1),user());
+        if(!rows.isEmpty()) return rows.get(0);
+        boolean enabled=inferredAutoTrading();
+        autoTrading(enabled);
+        return enabled;
+    }
+    public void autoTrading(boolean enabled) {
+        if(db.update(sql("UPDATE user_trading_control SET enabled=? WHERE user_id=?"),enabled?1:0,user())==0)
+            db.update(sql("INSERT INTO user_trading_control(user_id,enabled) VALUES(?,?)"),user(),enabled?1:0);
+    }
+    private boolean inferredAutoTrading() {
+        List<Long> opened=db.query(sql("SELECT id FROM user_audit_event WHERE user_id=? AND kind='CONTROL' AND summary LIKE '已开启%' ORDER BY id DESC LIMIT 1"),(r,n)->r.getLong(1),user());
+        if(opened.isEmpty()) return false;
+        Long later=db.queryForObject(sql("SELECT COUNT(*) FROM user_audit_event WHERE user_id=? AND id>? AND ((kind='CONTROL' AND summary LIKE '已暂停%') OR kind='ERROR')"),Long.class,user(),opened.get(0));
+        return later==0;
+    }
     public void audit(String kind,String summary,Object data) {
+        String text=summary==null?"":summary.substring(0,Math.min(500,summary.length()));
         db.update(sql("INSERT INTO user_audit_event(user_id,kind,summary,payload,created_at) VALUES(?,?,?,?,?)"),user(),kind,
-                summary.substring(0,Math.min(500,summary.length())),encode(data),Instant.now().toString());
+                text,encode(data),Instant.now().toString());
+        if(telegram!=null) telegram.operation(environment,kind,text);
     }
     public void intent(String id,Decision d,Object body) {
         String now=Instant.now().toString();
@@ -50,7 +70,14 @@ public class Store {
                 id,user(),d.instrument(),d.action().name(),encode(body),now,now);
     }
     public void state(String id,String state,String exchangeId,String detail) {
+        List<Map<String,Object>> rows=db.queryForList(sql("SELECT state,instrument,action FROM user_order_intent WHERE client_id=? AND user_id=?"),id,user());
+        String previous=rows.isEmpty()?"":String.valueOf(rows.get(0).get("state"));
         db.update(sql("UPDATE user_order_intent SET state=?,exchange_id=?,detail=?,updated_at=? WHERE client_id=? AND user_id=?"),state,exchangeId,detail,Instant.now().toString(),id,user());
+        if(telegram!=null && !state.equals(previous)) {
+            String instrument=rows.isEmpty()?id:String.valueOf(rows.get(0).get("instrument"));
+            String action=rows.isEmpty()?"":String.valueOf(rows.get(0).get("action"));
+            telegram.orderState(environment,instrument,action,state,detail);
+        }
     }
     public List<Map<String,Object>> orders(){return db.queryForList(sql("SELECT * FROM user_order_intent WHERE user_id=? ORDER BY created_at DESC LIMIT 100"),user());}
     public List<Map<String,Object>> events(){return db.queryForList(sql("SELECT * FROM user_audit_event WHERE user_id=? ORDER BY id DESC LIMIT 100"),user());}

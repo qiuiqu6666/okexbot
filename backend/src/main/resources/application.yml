@@ -20,3 +20,5 @@ pilot:
   ai-allowed-base-urls: ${AI_ALLOWED_BASE_URLS:https://nxaiapp.com/v1,https://api.openai.com/v1,https://api.deepseek.com/v1,https://openrouter.ai/api/v1}
   session-hours: ${PILOT_SESSION_HOURS:168}
   poll-ms: ${PILOT_POLL_MS:15000}
+  telegram-token: ${TELEGRAM_BOT_TOKEN:}
+  telegram-poll-ms: ${TELEGRAM_POLL_MS:5000}

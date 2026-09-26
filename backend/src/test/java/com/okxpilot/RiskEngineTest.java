@@ -52,6 +52,14 @@ class RiskEngineTest {
         assertThatThrownBy(()->validate(new Decision(Action.OPEN_LONG,instrument.id(),n("1"),null,n("62000"),n("59000"),"开仓"),account(List.of()))).hasMessageContaining("最小下单量");
         assertThatThrownBy(()->validate(new Decision(Action.OPEN_LONG,instrument.id(),n("101"),null,n("62000"),n("59000"),"开仓"),account(List.of()))).hasMessageContaining("单笔");
     }
+    @Test void switchesToGpt6SolWhenLunaChannelIsDown(){
+        assertThat(AiClient.fallbackModel("gpt-6-luna",503,"{\"error\":{\"code\":\"model_not_found\"}}")).isEqualTo("gpt-5.6-luna");
+        assertThat(AiClient.fallbackModel("gpt-5.6-luna",503,"model_not_found")).isEqualTo("gpt-6-sol");
+        assertThat(AiClient.fallbackModel("gpt-6-sol",503,"model_not_found")).isEqualTo("deepseek-v4-pro");
+        assertThat(AiClient.fallbackModel("deepseek-v4-pro",503,"model_not_found")).isNull();
+        assertThat(AiClient.fallbackModel("gpt-6-luna",401,"unauthorized")).isNull();
+        assertThat(AiClient.fallbackModel("gpt-4o",503,"model_not_found")).isNull();
+    }
     @Test void mapsHedgePositionSideAndOrderSide(){
         assertThat(OkxClient.signedSize("long",n("2"))).isEqualByComparingTo("2");
         assertThat(OkxClient.signedSize("short",n("2"))).isEqualByComparingTo("-2");

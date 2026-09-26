@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'session_store.dart';
 
 class ApiError implements Exception {
   final String message;
@@ -33,11 +34,22 @@ class PilotApi {
   String _token;
   String username = '';
   String environment = 'DEMO';
+  SessionStore? session;
   final http.Client client;
   void Function()? onUnauthorized;
   PilotApi(this.baseUrl, [String token = '', http.Client? transport])
     : _token = token,
       client = transport ?? http.Client();
+  void resume(String token, String name, String tradingEnvironment) {
+    _token = token;
+    username = name;
+    environment = tradingEnvironment == 'LIVE' ? 'LIVE' : 'DEMO';
+  }
+
+  Future<void> persist() async {
+    if (_token.isEmpty || session == null) return;
+    await session!.save(SavedSession(baseUrl, _token, username, environment));
+  }
 
   Future<void> authenticate(
     String username,
@@ -57,6 +69,7 @@ class PilotApi {
     }
     _token = result['token'] as String;
     this.username = '${result['user']['username']}';
+    await persist();
   }
 
   Future<dynamic> request(
@@ -76,6 +89,7 @@ class PilotApi {
       ))().timeout(const Duration(seconds: 150));
       if (response.statusCode == 401 && _token.isNotEmpty) {
         _token = '';
+        await session?.clear();
         onUnauthorized?.call();
         throw ApiError('登录已过期，请重新登录', 401);
       }
@@ -97,9 +111,45 @@ class PilotApi {
     }
   }
 
+  Stream<Map<String, dynamic>> watch() async* {
+    final req = http.Request('GET', Uri.parse('$baseUrl/api/stream'));
+    req.followRedirects = false;
+    req.headers['Accept'] = 'text/event-stream';
+    req.headers['X-Trading-Environment'] = environment;
+    if (_token.isNotEmpty) req.headers['Authorization'] = 'Bearer $_token';
+    final response = await client.send(req);
+    if (response.statusCode == 401 && _token.isNotEmpty) {
+      _token = '';
+      await session?.clear();
+      onUnauthorized?.call();
+      throw ApiError('登录已过期，请重新登录', 401);
+    }
+    if (response.statusCode != 200) {
+      throw ApiError('实时行情连接失败', response.statusCode);
+    }
+    var buffer = '';
+    await for (final chunk in response.stream.transform(utf8.decoder)) {
+      buffer += chunk;
+      while (buffer.contains('\n\n')) {
+        final split = buffer.indexOf('\n\n');
+        final block = buffer.substring(0, split);
+        buffer = buffer.substring(split + 2);
+        final data = block
+            .split('\n')
+            .where((line) => line.startsWith('data:'))
+            .map((line) => line.substring(5).trim())
+            .join('\n');
+        if (data.isEmpty) continue;
+        final decoded = jsonDecode(data);
+        if (decoded is Map<String, dynamic>) yield decoded;
+      }
+    }
+  }
+
   Future<void> logout() async {
     await request('/auth/logout', method: 'POST');
     _token = '';
+    await session?.clear();
   }
 
   void close() {

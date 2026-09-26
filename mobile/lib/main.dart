@@ -6,17 +6,21 @@ import 'connection_editor.dart';
 import 'instrument_picker.dart';
 import 'news_panel.dart';
 import 'analysis_panel.dart';
+import 'session_store.dart';
 export 'api.dart';
+export 'session_store.dart';
 import 'package:flutter/material.dart';
 
 void main() => runApp(const PilotApp());
 const mint = Color(0xFF9EEBC5),
+    amber = Color(0xFFF0C27A),
     muted = Color(0xFF98A6AC),
     panel = Color(0xFF182326);
 
 class PilotApp extends StatelessWidget {
   final PilotApi Function(String)? createApi;
-  const PilotApp({super.key, this.createApi});
+  final SessionStore? sessions;
+  const PilotApp({super.key, this.createApi, this.sessions});
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: '仓位领航',
@@ -43,6 +47,7 @@ class PilotApp extends StatelessWidget {
     ),
     home: AuthPage(
       createApi: createApi,
+      sessions: sessions,
       dashboardBuilder: (api, status) =>
           Dashboard(api: api, initialStatus: status),
     ),
@@ -62,6 +67,7 @@ class _DashboardState extends State<Dashboard> {
   Map<String, dynamic>? connections;
   List<dynamic> events = [], orders = [], analyses = [];
   Timer? timer;
+  StreamSubscription<Map<String, dynamic>>? live;
   int tab = 0;
   bool busy = false, refreshing = false, stopping = false;
   bool previewing = false;
@@ -72,7 +78,7 @@ class _DashboardState extends State<Dashboard> {
     if (busy || refreshing || target == widget.api.environment) return;
     if (!await confirm(
       '切换到${target == 'LIVE' ? '实盘' : '模拟盘'}？',
-      '将暂停当前环境的自动交易，保留已有仓位和保护单。两个环境的密钥、币种和记录独立保存。实盘使用真实资金。',
+      '只切换当前查看的环境。实盘和模拟盘的自动交易各自保持，不会因为切换而停止。实盘使用真实资金。',
     )) {
       return;
     }
@@ -84,10 +90,10 @@ class _DashboardState extends State<Dashboard> {
     });
     final previous = widget.api.environment;
     try {
-      await widget.api.request('/pause', method: 'POST');
       widget.api.environment = target;
       final next = await widget.api.request('/status') as Map<String, dynamic>;
       if (next['environment'] != target) throw ApiError('后端尚未支持该交易环境，请升级后端');
+      await widget.api.persist();
       if (!mounted || leaving) return;
       setState(() {
         status = next;
@@ -109,6 +115,7 @@ class _DashboardState extends State<Dashboard> {
           switching = false;
         });
         await refresh();
+        listenLive();
         if (mounted && switchError != null) setState(() => error = switchError);
       }
     }
@@ -122,7 +129,22 @@ class _DashboardState extends State<Dashboard> {
     status = widget.initialStatus;
     widget.api.onUnauthorized = () => leave('登录已过期，请重新登录');
     refresh();
+    listenLive();
     timer = Timer.periodic(const Duration(seconds: 10), (_) => refresh());
+  }
+
+  void listenLive() {
+    live?.cancel();
+    live = widget.api.watch().listen(
+      (next) {
+        if (!mounted || leaving || switching) return;
+        setState(() {
+          status = next;
+          syncedAt = DateTime.now();
+        });
+      },
+      onError: (_) {},
+    );
   }
 
   void leave([String? message]) {
@@ -149,6 +171,7 @@ class _DashboardState extends State<Dashboard> {
   @override
   void dispose() {
     timer?.cancel();
+    live?.cancel();
     widget.api.close();
     super.dispose();
   }
@@ -454,6 +477,10 @@ class _DashboardState extends State<Dashboard> {
         children: [
           Expanded(
             child: FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: active ? amber : mint,
+                foregroundColor: const Color(0xFF14221C),
+              ),
               onPressed: active
                   ? (stopping ? null : pause)
                   : (busy
@@ -555,7 +582,23 @@ class _DashboardState extends State<Dashboard> {
     ];
   }
 
-  Widget positionCard(Map<String, dynamic> p) => Padding(
+  Map<String, dynamic> quoteFor(Map<String, dynamic> position) {
+    final rows = status['quotes'];
+    if (rows is List) {
+      for (final raw in rows) {
+        if (raw is! Map || raw['instrument'] != position['instrument']) continue;
+        final shown = num.tryParse('${raw['contracts']}') ?? 0;
+        final mine = num.tryParse('${position['contracts']}') ?? 0;
+        if (shown.sign == mine.sign) return raw.cast<String, dynamic>();
+      }
+    }
+    return position;
+  }
+
+  Widget positionCard(Map<String, dynamic> raw) {
+    final p = quoteFor(raw);
+    final side = (num.tryParse('${p['contracts']}') ?? 0) > 0 ? 'long' : 'short';
+    return Padding(
     padding: const EdgeInsets.only(bottom: 14),
     child: Surface(
       child: Column(
@@ -581,7 +624,12 @@ class _DashboardState extends State<Dashboard> {
           metric('未实现盈亏 / USDT', money(p['unrealizedPnl'])),
           const SizedBox(height: 16),
           infoRow('合约张数', '${p['contracts']}'),
+          infoRow('开仓价格', p['entryPrice'] == null ? '—' : money(p['entryPrice'])),
+          infoRow('最新价格', money(p['lastPrice'] ?? p['markPrice'])),
           infoRow('标记价格', money(p['markPrice'])),
+          infoRow('止盈', p['takeProfit'] == null ? '未挂出' : money(p['takeProfit'])),
+          infoRow('止损', p['stopLoss'] == null ? '未挂出' : money(p['stopLoss'])),
+          infoRow('杠杆', p['leverage'] == null ? '—' : '${p['leverage']}'),
           infoRow('名义敞口', '${money(p['notionalUsdt'])} USDT'),
           const SizedBox(height: 12),
           Row(
@@ -596,7 +644,7 @@ class _DashboardState extends State<Dashboard> {
                             '${p['instrument']} 将按当前交易所仓位提交只减仓市价单。',
                           )) {
                             await act(
-                              '/positions/${p['instrument']}/reduce',
+                              '/positions/${p['instrument']}/reduce?side=$side',
                               success: '减仓单已提交，请对账确认成交',
                             );
                           }
@@ -615,7 +663,7 @@ class _DashboardState extends State<Dashboard> {
                             '${p['instrument']} 将提交只减仓市价单。',
                           )) {
                             await act(
-                              '/positions/${p['instrument']}/close',
+                              '/positions/${p['instrument']}/close?side=$side',
                               success: '平仓单已提交，请对账确认成交',
                             );
                           }
@@ -628,7 +676,9 @@ class _DashboardState extends State<Dashboard> {
         ],
       ),
     ),
-  );
+    );
+  }
+
   List<Widget> history() => [
     const Text(
       '交易与决策记录',
@@ -761,12 +811,12 @@ class _DashboardState extends State<Dashboard> {
       initial: status['settings'] as Map<String, dynamic>,
       loadInstruments: () async =>
           (await widget.api.request('/instruments') as List).cast<String>(),
-      enabled: !busy && status['enabled'] != true,
+      enabled: !busy,
       onSave: (s) =>
           act('/settings', method: 'PUT', body: s, success: '风险参数已保存'),
     ),
     const SizedBox(height: 16),
-    const Notice('修改参数或连接前请暂停自动交易。每个用户应使用独立的 OKX 账户。'),
+    const Notice('风险参数可以随时修改，下一轮分析生效。修改连接前请先暂停自动交易。每个用户应使用独立的 OKX 账户。'),
     if (status['riskPolicy'] is Map<String, dynamic>) ...[
       const SizedBox(height: 16),
       RiskPolicyEditor(
@@ -961,7 +1011,7 @@ class _SettingsEditorState extends State<SettingsEditor> {
     'maxDailyLossPct': '日内权益损失上限 / %',
     'maxPositions': '最大持仓数量',
     'leverage': '杠杆',
-    'intervalSeconds': '分析间隔 / 秒（至少 60）',
+    'intervalSeconds': '分析间隔 / 秒（建议 300，至少 60）',
   };
   @override
   void initState() {

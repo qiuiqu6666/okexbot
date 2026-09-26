@@ -74,6 +74,15 @@ public class RiskEngine {
         checkSize(size,i);
         return new Plan(position.contracts().signum()>0?"sell":"buy",size,true,size.multiply(i.contractValue()).multiply(price));
     }
+    public Plan manualClose(Position position,Instrument i,BigDecimal fraction,BigDecimal price) {
+        if(position==null || !position.instrument().equals(i.id()) || !"isolated".equals(position.marginMode()))
+            throw new IllegalArgumentException("只能手动平掉当前账户中的逐仓持仓");
+        if(fraction==null) fraction=BigDecimal.ONE;
+        if(!positive(fraction) || fraction.compareTo(BigDecimal.ONE)>0 || !positive(price)) throw new IllegalArgumentException("减仓比例或行情无效");
+        BigDecimal size=roundDown(position.contracts().abs().multiply(fraction),i.lotSize());
+        checkSize(size,i);
+        return new Plan(position.contracts().signum()>0?"sell":"buy",size,true,size.multiply(i.contractValue()).multiply(price));
+    }
     public void validateBook(com.fasterxml.jackson.databind.JsonNode book,Plan plan,BigDecimal reference,RiskPolicy policy) {
         if(book==null || !book.path("asks").isArray() || !book.path("bids").isArray() || book.path("asks").isEmpty() || book.path("bids").isEmpty())
             throw new IllegalArgumentException("盘口数据缺失");

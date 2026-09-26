@@ -12,15 +12,12 @@ public final class Domain {
         public static List<String> mainstream() {
             return List.of(
                     "BTC","ETH","SOL","LTC","XRP","DOGE","BNB","ADA","AVAX","DOT",
-                    "LINK","TRX","BCH","UNI","NEAR","APT","SUI","ATOM","FIL","ICP",
-                    "ETC","HBAR","XLM","ARB","OP","INJ","AAVE","SHIB","PEPE","WLD",
-                    "SEI","TIA","FET","RENDER","IMX","GRT","LDO","CRV","SAND","MANA",
-                    "ALGO","XTZ","STX","WIF","BONK","ORDI","JUP","ONDO","ENA","TAO")
+                    "LINK","TRX","BCH","UNI","NEAR")
                     .stream().map(s -> s + "-USDT-SWAP").toList();
         }
         public static Settings defaults() {
             return new Settings(mainstream(), new BigDecimal("50"),
-                    new BigDecimal("100"), new BigDecimal("2"), 1, 1, 600);
+                    new BigDecimal("100"), new BigDecimal("2"), 1, 1, 300);
         }
         public void validate() {
             if (instruments == null || instruments.isEmpty() ||
@@ -37,14 +34,18 @@ public final class Domain {
     public record Instrument(String id, BigDecimal contractValue, BigDecimal lotSize, BigDecimal minSize,
                              BigDecimal tickSize, BigDecimal maxMarketSize) {}
     public record Position(String instrument, BigDecimal contracts, BigDecimal markPrice, BigDecimal notionalUsdt,
-                           BigDecimal unrealizedPnl, String marginMode, String positionId, long createdAt,BigDecimal leverage,String tradeId) {
+                           BigDecimal unrealizedPnl, String marginMode, String positionId, long createdAt,BigDecimal leverage,String tradeId,BigDecimal entryPrice) {
         public Position(String instrument,BigDecimal contracts,BigDecimal markPrice,BigDecimal notionalUsdt,
                         BigDecimal unrealizedPnl,String marginMode) {
-            this(instrument,contracts,markPrice,notionalUsdt,unrealizedPnl,marginMode,"",0,BigDecimal.ONE,"");
+            this(instrument,contracts,markPrice,notionalUsdt,unrealizedPnl,marginMode,"",0,BigDecimal.ONE,"",null);
         }
         public Position(String instrument,BigDecimal contracts,BigDecimal markPrice,BigDecimal notionalUsdt,
                         BigDecimal unrealizedPnl,String marginMode,String positionId,long createdAt) {
-            this(instrument,contracts,markPrice,notionalUsdt,unrealizedPnl,marginMode,positionId,createdAt,BigDecimal.ONE,"");
+            this(instrument,contracts,markPrice,notionalUsdt,unrealizedPnl,marginMode,positionId,createdAt,BigDecimal.ONE,"",null);
+        }
+        public Position(String instrument,BigDecimal contracts,BigDecimal markPrice,BigDecimal notionalUsdt,
+                        BigDecimal unrealizedPnl,String marginMode,String positionId,long createdAt,BigDecimal leverage,String tradeId) {
+            this(instrument,contracts,markPrice,notionalUsdt,unrealizedPnl,marginMode,positionId,createdAt,leverage,tradeId,null);
         }
     }
     public record Snapshot(Instant fetchedAt, BigDecimal equity, BigDecimal available,

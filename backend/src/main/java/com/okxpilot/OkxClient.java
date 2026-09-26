@@ -116,7 +116,9 @@ public class OkxClient {
             if (size.signum()==0) continue;
             if (!p.path("instId").asText().endsWith("-USDT-SWAP"))
                 throw new IllegalStateException("账户存在不支持的合约，停止自动交易");
-            positions.add(new Position(p.path("instId").asText(),signedSize(p.path("posSide").asText(),size),number(p,"markPx"),number(p,"notionalUsd").abs(),number(p,"upl"),p.path("mgnMode").asText(),p.path("posId").asText(),p.path("cTime").asLong(),number(p,"lever"),p.path("tradeId").asText()));
+            String avgPx=p.path("avgPx").asText("");
+            BigDecimal entry=avgPx.isBlank()?null:new BigDecimal(avgPx);
+            positions.add(new Position(p.path("instId").asText(),signedSize(p.path("posSide").asText(),size),number(p,"markPx"),number(p,"notionalUsd").abs(),number(p,"upl"),p.path("mgnMode").asText(),p.path("posId").asText(),p.path("cTime").asLong(),number(p,"lever"),p.path("tradeId").asText(),entry));
         }
         return new Snapshot(Instant.now(),number(usdt,"eq"),number(usdt,usdt.path("availBal").asText().isBlank()?"availEq":"availBal"),positions);
     }
@@ -128,6 +130,18 @@ public class OkxClient {
             throw new IllegalStateException("仅支持正常交易、币本位面值的线性 USDT 永续合约");
         return new Instrument(id,number(i,"ctVal"),number(i,"lotSz"),number(i,"minSz"),number(i,"tickSz"),number(i,"maxMktSz"));
     }
+    public Map<String,BigDecimal> lastPrices(java.util.Collection<String> ids) {
+        JsonNode rows=call("GET","/api/v5/market/tickers?instType=SWAP",null,false);
+        var want=new java.util.HashSet<>(ids);
+        var out=new java.util.LinkedHashMap<String,BigDecimal>();
+        for(JsonNode row:rows) {
+            String id=row.path("instId").asText();
+            if(!want.contains(id)) continue;
+            String last=row.path("last").asText("");
+            if(!last.isBlank()) out.put(id,new BigDecimal(last));
+        }
+        return out;
+    }
     public BigDecimal price(String id) {
         validateId(id);
         JsonNode t=first(call("GET","/api/v5/market/ticker?instId="+id,null,false));
@@ -135,10 +149,13 @@ public class OkxClient {
         if(age< -5000 || age>30000 || !positive(number(t,"last"))) throw new IllegalStateException("行情已过期或无效");
         return number(t,"last");
     }
-    public JsonNode candles(String id) {
+    public JsonNode candles(String id) { return candles(id,"5m"); }
+    public JsonNode candles(String id,String bar) {
         validateId(id);
-        JsonNode rows=call("GET","/api/v5/market/candles?instId="+id+"&bar=5m&limit=60",null,false);
-        if(rows.size()<20 || System.currentTimeMillis()-rows.get(0).path(0).asLong()>600000)
+        if(!"5m".equals(bar) && !"15m".equals(bar) && !"1H".equals(bar)) throw new IllegalArgumentException("不支持的K线周期");
+        JsonNode rows=call("GET","/api/v5/market/candles?instId="+id+"&bar="+bar+"&limit=60",null,false);
+        long maxAge="5m".equals(bar)?600000L:"15m".equals(bar)?1800000L:7200000L;
+        if(rows.size()<20 || System.currentTimeMillis()-rows.get(0).path(0).asLong()>maxAge)
             throw new IllegalStateException("K 线缺失或已过期");
         return rows;
     }

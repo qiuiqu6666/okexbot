@@ -1,11 +1,18 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'api.dart';
+import 'session_store.dart';
 
 class AuthPage extends StatefulWidget {
   final Widget Function(PilotApi, Map<String, dynamic>) dashboardBuilder;
   final PilotApi Function(String)? createApi;
-  const AuthPage({super.key, required this.dashboardBuilder, this.createApi});
+  final SessionStore? sessions;
+  const AuthPage({
+    super.key,
+    required this.dashboardBuilder,
+    this.createApi,
+    this.sessions,
+  });
   @override
   State<AuthPage> createState() => _AuthPageState();
 }
@@ -21,8 +28,66 @@ class _AuthPageState extends State<AuthPage> {
   final username = TextEditingController(),
       password = TextEditingController(),
       confirmation = TextEditingController();
-  bool register = false, busy = false, showPassword = false;
+  bool register = false, busy = false, showPassword = false, opening = false;
   String? error;
+  SessionStore get sessions => widget.sessions ?? SessionStore();
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => restore());
+  }
+
+  PilotApi open(String url) {
+    final api = widget.createApi?.call(url) ?? PilotApi(url);
+    api.session = sessions;
+    return api;
+  }
+
+  Future<void> restore() async {
+    if (opening) return;
+    opening = true;
+    final saved = await sessions.read();
+    if (!mounted || saved == null) {
+      opening = false;
+      return;
+    }
+    address.text = saved.baseUrl;
+    username.text = saved.username;
+    setState(() {
+      busy = true;
+      error = null;
+    });
+    final api = open(saved.baseUrl);
+    api.resume(saved.token, saved.username, saved.environment);
+    try {
+      await api.request('/auth/me');
+      final status = await api.request('/status') as Map<String, dynamic>;
+      if (!mounted) {
+        api.close();
+        return;
+      }
+      final message = await Navigator.of(context).push<String>(
+        MaterialPageRoute(builder: (_) => widget.dashboardBuilder(api, status)),
+      );
+      if (mounted) {
+        setState(() {
+          register = false;
+          error = message;
+        });
+      }
+    } on ApiError catch (e) {
+      api.close();
+      if (e.statusCode == 401) await sessions.clear();
+      if (mounted) setState(() => error = '$e');
+    } catch (e) {
+      api.close();
+      if (mounted) setState(() => error = '$e');
+    } finally {
+      opening = false;
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   @override
   void dispose() {
     address.dispose();
@@ -33,7 +98,7 @@ class _AuthPageState extends State<AuthPage> {
   }
 
   Future<void> submit() async {
-    if (!form.currentState!.validate()) return;
+    if (opening || !form.currentState!.validate()) return;
     String url;
     try {
       url = normalizeServerAddress(address.text);
@@ -42,11 +107,12 @@ class _AuthPageState extends State<AuthPage> {
       return;
     }
     FocusManager.instance.primaryFocus?.unfocus();
+    opening = true;
     setState(() {
       busy = true;
       error = null;
     });
-    final api = widget.createApi?.call(url) ?? PilotApi(url);
+    final api = open(url);
     try {
       await api.authenticate(
         username.text.trim(),
@@ -73,6 +139,7 @@ class _AuthPageState extends State<AuthPage> {
       api.close();
       if (mounted) setState(() => error = '$e');
     } finally {
+      opening = false;
       if (mounted) setState(() => busy = false);
     }
   }

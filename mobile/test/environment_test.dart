@@ -92,7 +92,7 @@ void main() {
     },
   );
   testWidgets(
-    'switch pauses demo and keeps live disabled until confirmed start',
+    'switch keeps the current auto trading state and does not pause it',
     (tester) async {
       final calls = <http.Request>[];
       final settings = {
@@ -157,13 +157,7 @@ void main() {
       await tester.tap(find.text('确认'));
       await tester.pumpAndSettle();
       expect(api.environment, 'LIVE');
-      expect(
-        calls
-            .where((r) => r.url.path.endsWith('/pause'))
-            .single
-            .headers['X-Trading-Environment'],
-        'DEMO',
-      );
+      expect(calls.where((r) => r.url.path.endsWith('/pause')), isEmpty);
       expect(calls.where((r) => r.url.path.endsWith('/start')), isEmpty);
       expect(find.textContaining('当前为实盘'), findsOneWidget);
       await tester.tap(find.text('总览'));
@@ -180,4 +174,52 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+  testWidgets('start and pause use different button colors', (tester) async {
+    Future<void> show(bool enabled) async {
+      final api = PilotApi(
+        'http://localhost',
+        'test-token',
+        MockClient(
+          (req) async => http.Response(
+            '[]',
+            200,
+            headers: {'content-type': 'application/json'},
+          ),
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Dashboard(
+            api: api,
+            initialStatus: {
+              'environment': 'DEMO',
+              'enabled': enabled,
+              'settings': {
+                'instruments': ['BTC-USDT-SWAP'],
+                'maxOrderUsdt': 100,
+                'maxExposureUsdt': 300,
+                'maxDailyLossPct': 3,
+                'maxPositions': 2,
+                'leverage': 1,
+                'intervalSeconds': 300,
+              },
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    Color? background(String label) => tester
+        .widget<FilledButton>(find.widgetWithText(FilledButton, label))
+        .style
+        ?.backgroundColor
+        ?.resolve(const <WidgetState>{});
+
+    await show(false);
+    expect(background('开启自动交易'), mint);
+    await show(true);
+    expect(background('暂停自动交易'), amber);
+    expect(background('暂停自动交易'), isNot(mint));
+  });
 }
