@@ -23,8 +23,9 @@ public class Api {
     private final ConnectionService connections;
     public Api(TradingRegistry trading,Store stores,AuthService auth,ConnectionService connections){this.trading=trading;this.stores=stores;this.auth=auth;this.connections=connections;}
     static AuthService.User user(HttpServletRequest r){return (AuthService.User)r.getAttribute("pilot.user");}
-    private TradingService engine(HttpServletRequest r){return trading.forUser(user(r).id());}
-    @GetMapping("/health") public Object health(){return Map.of("status","UP","environment","DEMO","auth","username-password");}
+    private TradingEnvironment environment(HttpServletRequest r){return TradingEnvironment.parse(r.getHeader("X-Trading-Environment"));}
+    private TradingService engine(HttpServletRequest r){return trading.forUser(user(r).id(),environment(r));}
+    @GetMapping("/health") public Object health(){return Map.of("status","UP","environment","DEMO","auth","username-password","tradingEnvironments",java.util.List.of("DEMO","LIVE"));}
     @PostMapping("/auth/register") public Object register(@RequestBody AuthService.Credentials c,HttpServletRequest r){return auth.register(c,r.getRemoteAddr());}
     @PostMapping("/auth/login") public Object login(@RequestBody AuthService.Credentials c,HttpServletRequest r){return auth.login(c,r.getRemoteAddr());}
     @PostMapping("/auth/logout") public Object logout(HttpServletRequest r){auth.logout(r.getHeader("Authorization"));return Map.of("loggedOut",true);}
@@ -32,16 +33,20 @@ public class Api {
     @GetMapping("/status") public Object status(HttpServletRequest r){return engine(r).status();}
     @PostMapping("/sync") public Object sync(HttpServletRequest r){return engine(r).refresh();}
     @PutMapping("/settings") public Object settings(@RequestBody Settings s,HttpServletRequest r){engine(r).settings(s);return engine(r).status();}
-    @GetMapping("/connections") public Object connections(HttpServletRequest r){return connections.view(user(r).id());}
-    @PutMapping("/connections") public Object connections(@RequestBody ConnectionService.Update u,HttpServletRequest r){trading.configure(user(r).id(),u);return connections.view(user(r).id());}
-    @PostMapping("/start") public Object start(HttpServletRequest r){engine(r).enable();return engine(r).status();}
+    @GetMapping("/connections") public Object connections(HttpServletRequest r){return connections.forEnvironment(environment(r)).view(user(r).id());}
+    @PutMapping("/connections") public Object connections(@RequestBody ConnectionService.Update u,HttpServletRequest r){trading.configure(user(r).id(),environment(r),u);return connections.forEnvironment(environment(r)).view(user(r).id());}
+    @GetMapping("/instruments") public Object instruments(HttpServletRequest r){return engine(r).instruments();}
+    @PostMapping("/start") public Object start(@RequestBody(required=false) StartRequest body,HttpServletRequest r){
+        if(environment(r)==TradingEnvironment.LIVE && (body==null || !body.confirmLive())) throw new IllegalArgumentException("开启实盘自动交易必须明确确认真实资金交易");
+        engine(r).enable();return engine(r).status();}
+    public record StartRequest(boolean confirmLive) {}
     @PostMapping("/pause") public Object pause(HttpServletRequest r){engine(r).pause();return engine(r).status();}
     @PostMapping("/preview") public Decision preview(HttpServletRequest r){return engine(r).preview();}
     @PostMapping("/reconcile") public Object reconcile(HttpServletRequest r){engine(r).reconcileNow();return engine(r).status();}
     @PostMapping("/positions/{instrument}/close") public Object close(@PathVariable String instrument,HttpServletRequest r){engine(r).close(instrument,false);return Map.of("accepted",true);}
     @PostMapping("/positions/{instrument}/reduce") public Object reduce(@PathVariable String instrument,HttpServletRequest r){engine(r).close(instrument,true);return Map.of("accepted",true);}
-    @GetMapping("/orders") public Object orders(HttpServletRequest r){return stores.forUser(user(r).id()).orders();}
-    @GetMapping("/events") public Object events(HttpServletRequest r){return stores.forUser(user(r).id()).events();}
+    @GetMapping("/orders") public Object orders(HttpServletRequest r){return stores.forUser(user(r).id(),environment(r)).orders();}
+    @GetMapping("/events") public Object events(HttpServletRequest r){return stores.forUser(user(r).id(),environment(r)).events();}
 }
 
 @Component

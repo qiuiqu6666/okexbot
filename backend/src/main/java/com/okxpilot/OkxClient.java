@@ -20,10 +20,26 @@ import static com.okxpilot.Domain.*;
 
 public class OkxClient {
     private final String key, secret, passphrase;
+    private final TradingEnvironment environment;
     private final ObjectMapper json;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
     public OkxClient(String key,String secret,String passphrase,ObjectMapper json) {
-        this.key=key; this.secret=secret; this.passphrase=passphrase; this.json=json;
+        this(key,secret,passphrase,json,TradingEnvironment.DEMO);
+    }
+    public OkxClient(String key,String secret,String passphrase,ObjectMapper json,TradingEnvironment environment) {
+        this.environment=environment;this.key=key; this.secret=secret; this.passphrase=passphrase; this.json=json;
+    }
+    Map<String,String> environmentHeaders(){return environment==TradingEnvironment.DEMO?Map.of("x-simulated-trading","1"):Map.of();}
+    public List<String> instruments() {
+        var ids=new java.util.TreeSet<String>();
+        for(JsonNode row:call("GET","/api/v5/public/instruments?instType=SWAP",null,false)) {
+            String id=row.path("instId").asText();
+            if(id.matches("[A-Z0-9]{2,15}-USDT-SWAP") && "live".equals(row.path("state").asText()) &&
+                    "linear".equals(row.path("ctType").asText()) && "USDT".equals(row.path("settleCcy").asText()) &&
+                    id.split("-")[0].equals(row.path("ctValCcy").asText())) ids.add(id);
+        }
+        if(ids.isEmpty()) throw new IllegalStateException("当前环境未返回可交易币种，请稍后重试");
+        return List.copyOf(ids);
     }
     public boolean configured() { return !key.isBlank() && !secret.isBlank() && !passphrase.isBlank(); }
     public static String sign(String secret, String timestamp, String method, String path, String body) {
@@ -34,12 +50,12 @@ public class OkxClient {
         } catch (Exception e) { throw new IllegalStateException("签名失败"); }
     }
     public JsonNode call(String method, String path, Object payload, boolean authenticated) {
-        if (authenticated && !configured()) throw new IllegalStateException("请在设置中配置自己的 OKX 模拟盘凭据");
+        if (authenticated && !configured()) throw new IllegalStateException("请在设置中配置当前环境的 OKX 凭据");
         try {
             String body = payload == null ? "" : json.writeValueAsString(payload);
             HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("https://www.okx.com"+path))
-                    .timeout(Duration.ofSeconds(12)).header("Content-Type","application/json")
-                    .header("x-simulated-trading", "1");
+                    .timeout(Duration.ofSeconds(12)).header("Content-Type","application/json");
+            environmentHeaders().forEach(request::header);
             if (authenticated) {
                 String timestamp = Instant.now().toString();
                 request.header("OK-ACCESS-KEY",key).header("OK-ACCESS-PASSPHRASE",passphrase)
@@ -64,7 +80,7 @@ public class OkxClient {
     public void checkAccountMode() {
         JsonNode config = first(call("GET","/api/v5/account/config",null,true));
         if (!"net_mode".equals(config.path("posMode").asText()) || !"2".equals(config.path("acctLv").asText()))
-            throw new IllegalStateException("第一版仅支持合约模式（Futures mode）及单向持仓（net_mode），请在 OKX 模拟盘设置");
+            throw new IllegalStateException("第一版仅支持合约模式（Futures mode）及单向持仓（net_mode），请在当前 OKX 账户设置");
     }
     public Snapshot snapshot() {
         JsonNode balance = first(call("GET","/api/v5/account/balance?ccy=USDT",null,true));

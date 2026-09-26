@@ -25,6 +25,9 @@ class MySqlSmokeTest {
         String username="mysql"+System.currentTimeMillis();
         var account=auth.register(new AuthService.Credentials(username,"mysql-test-password"),username);
         Store store=stores.forUser(account.user().id());
+        Store live=stores.forUser(account.user().id(),TradingEnvironment.LIVE);
+        assertThat(live.acquire()).isTrue();live.release();
+        assertThat(live.orders()).isEmpty();
         assertThat(auth.authenticate("Bearer "+account.token()).username()).isEqualTo(username);
         Settings settings=Settings.defaults();store.settings(settings);assertThat(store.settings()).isEqualTo(settings);
         String id="mysql"+System.currentTimeMillis();

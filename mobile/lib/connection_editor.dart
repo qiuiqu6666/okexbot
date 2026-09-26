@@ -17,7 +17,7 @@ class ConnectionEditor extends StatefulWidget {
 class _ConnectionEditorState extends State<ConnectionEditor> {
   late final Map<String, TextEditingController> fields;
   static const labels = {
-    'okxKey': 'OKX 模拟盘 API Key',
+    'okxKey': 'OKX API Key',
     'okxSecret': 'OKX Secret',
     'okxPassphrase': 'OKX Passphrase',
     'aiBaseUrl': '模型接口地址',
@@ -80,7 +80,23 @@ class _ConnectionEditorState extends State<ConnectionEditor> {
             obscureText: !['aiBaseUrl', 'aiModel'].contains(entry.key),
             autocorrect: false,
             enableSuggestions: false,
-            decoration: InputDecoration(labelText: entry.value),
+            decoration: InputDecoration(
+              labelText: entry.value,
+              helperText:
+                  [
+                    'okxKey',
+                    'okxSecret',
+                    'okxPassphrase',
+                    'aiKey',
+                  ].contains(entry.key)
+                  ? (widget.initial[entry.key == 'aiKey'
+                                ? 'aiConfigured'
+                                : 'okxConfigured'] ==
+                            true
+                        ? '已保存，留空保留；填写可更新'
+                        : '尚未配置')
+                  : null,
+            ),
           ),
         ),
       if (widget.initial['encryptionReady'] != true)

@@ -9,7 +9,7 @@
 ## 第一版确定范围
 
 - 多用户、每用户独立 OKX 模拟账户、USDT 本位永续合约。
-- 默认模拟盘，服务启动时自动交易关闭。
+- 支持模拟盘与实盘，每次登录默认展示模拟盘，服务启动时两个环境的自动交易均关闭。
 - Flutter Android 和 iOS；AI 使用可配置的 OpenAI 兼容接口。
 - AI 可提出 HOLD、OPEN_LONG、OPEN_SHORT、REDUCE、CLOSE、UPDATE_STOPS。
 - 支持 AI 自动开仓、减仓、平仓及收紧止盈止损。
@@ -68,3 +68,10 @@ TradingRegistry 为每个用户创建独立的交易实例，持仓快照、启�
 
 - OKX API：https://www.okx.com/docs-v5/zh/
 - Spring Boot：https://docs.spring.io/spring-boot/3.5/system-requirements.html
+
+
+## 环境隔离（V3）
+
+交易实例按 (userId, environment) 创建，调度同时监控两种环境，旧环境已有订单不会因手机切换而丢失对账。DEMO 使用既有 user_* 表，LIVE 使用独立 live_user_* 表（结构相同）；用户认证表共用。ConnectionService 按环境使用不同的密文附加认证数据，模拟盘旧密文保持兼容。所有交易方法在创建时绑定对应环境的 Store 和 OkxClient，不在执行过程中修改环境。
+
+每个客户端请求显式选择环境，旧客户端缺省为 DEMO。实盘请求不添加 x-simulated-trading；不复用或回退到另一环境的密钥。实盘启动另需 confirmLive=true。币种查询为公开行情请求，用户无需先保存 OKX Key 才能选择币种。

@@ -11,6 +11,7 @@
 | POST | /api/auth/logout | 撤销当前会话 |
 | GET | /api/connections | 当前用户连接状态、模型地址/名称、允许地址；不返回密钥 |
 | PUT | /api/connections | 暂停时更新自己的连接；空值保留已有字段 |
+| GET | /api/instruments | 当前环境可交易的线性 USDT 永续合约 ID 列表；无需 OKX 私有密钥，失败返回错误 |
 | GET | /api/status | 运行状态、凭据是否配置、最近账户快照、风控参数 |
 | POST | /api/sync | 主动从 OKX 刷新账户和持仓 |
 | PUT | /api/settings | 暂停时修改风控设置 |
@@ -44,3 +45,12 @@
 注册/登录请求：`{"username":"alice","password":"your-password"}`。成功返回 `{"token":"随机会话令牌","expiresAt":"UTC 时间","user":{"id":1,"username":"alice"}}`。密码 BCrypt 哈希、会话 SHA-256 摘要落库。默认会话 7 天；过期/注销后返回 401。
 
 连接写入字段：`okxKey`、`okxSecret`、`okxPassphrase`、`aiBaseUrl`、`aiKey`、`aiModel`。AI 地址必须出现在管理员配置的 `AI_ALLOWED_BASE_URLS` 中。连接凭据采用 AES-256-GCM 加密并绑定用户 ID。用户自行填写的地址不会扩展服务端允许列表。
+
+
+## 交易环境（V3）
+
+已认证的业务接口接受 `X-Trading-Environment: DEMO` 或 `LIVE`，缺省 DEMO，非法值拒绝。`/connections`、`/settings`、`/orders`、`/events`、`/status` 与交易操作均使用指定环境，登录会话本身不切换全局环境。两个环境的连接凭据（包括模型）、风控、订单、执行锁及权益基准独立存储。实盘密文额外绑定 LIVE 环境，不能复制模拟盘密文冒充实盘配置。
+
+`POST /api/start` 在 LIVE 环境必须同时提交 `{"confirmLive":true}`，否则拒绝；DEMO 仍兼容空请求体。App 切换时先对原环境调用 `/pause`，再请求目标 `/status`，不会自动调用 `/start`。健康接口提供 `tradingEnvironments: ["DEMO","LIVE"]`；健康响应中的 environment 是默认环境，不表示所有用户的运行环境。
+
+`GET /api/instruments` 示例返回 `["BTC-USDT-SWAP","ETH-USDT-SWAP"]`，实际结果来自 OKX `GET /api/v5/public/instruments?instType=SWAP`，筛选 state=live、ctType=linear、settleCcy=USDT、面值币种与交易币种一致的合约。设置仍接受 1–5 个不重复 ID，执行交易前再次验证合约状态、模式及精度。

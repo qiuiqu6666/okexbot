@@ -41,6 +41,7 @@ public class AuthService {
                 db.update("INSERT INTO app_user(username,password_hash,created_at) VALUES(?,?,?)",username,hash,Instant.now().toString());
                 Long id=db.queryForObject("SELECT id FROM app_user WHERE username=?",Long.class,username);
                 db.update("INSERT INTO user_execution_lease(user_id,owner,expires_at) VALUES(?,'',0)",id);
+                db.update("INSERT INTO live_user_execution_lease(user_id,owner,expires_at) VALUES(?,'',0)",id);
                 return issue(new User(id,username));
             });
         } catch(DuplicateKeyException e) { throw new ResponseStatusException(HttpStatus.CONFLICT,"用户名已被注册"); }

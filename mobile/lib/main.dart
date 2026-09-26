@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'api.dart';
 import 'auth_page.dart';
 import 'connection_editor.dart';
+import 'instrument_picker.dart';
 export 'api.dart';
 import 'package:flutter/material.dart';
 
@@ -61,7 +62,54 @@ class _DashboardState extends State<Dashboard> {
   Timer? timer;
   int tab = 0;
   bool busy = false, refreshing = false, stopping = false;
-  bool leaving = false;
+  bool leaving = false, switching = false;
+  String get environmentLabel =>
+      widget.api.environment == 'LIVE' ? '实盘' : '模拟盘';
+  Future<void> switchEnvironment(String target) async {
+    if (busy || refreshing || target == widget.api.environment) return;
+    if (!await confirm(
+      '切换到${target == 'LIVE' ? '实盘' : '模拟盘'}？',
+      '将暂停当前环境的自动交易，保留已有仓位和保护单。两个环境的密钥、币种和记录独立保存。实盘使用真实资金。',
+    )) {
+      return;
+    }
+    if (!mounted || leaving) return;
+    setState(() {
+      busy = true;
+      switching = true;
+      error = null;
+    });
+    final previous = widget.api.environment;
+    try {
+      await widget.api.request('/pause', method: 'POST');
+      widget.api.environment = target;
+      final next = await widget.api.request('/status') as Map<String, dynamic>;
+      if (next['environment'] != target) throw ApiError('后端尚未支持该交易环境，请升级后端');
+      if (!mounted || leaving) return;
+      setState(() {
+        status = next;
+        connections = null;
+        orders = [];
+        events = [];
+        error = null;
+        syncedAt = null;
+      });
+    } catch (e) {
+      widget.api.environment = previous;
+      if (mounted) setState(() => error = '$e');
+    } finally {
+      if (mounted) {
+        final switchError = error;
+        setState(() {
+          busy = false;
+          switching = false;
+        });
+        await refresh();
+        if (mounted && switchError != null) setState(() => error = switchError);
+      }
+    }
+  }
+
   String? error;
   DateTime? syncedAt;
   @override
@@ -104,6 +152,7 @@ class _DashboardState extends State<Dashboard> {
   Future<void> refresh() async {
     if (refreshing || busy || leaving) return;
     refreshing = true;
+    final requestedEnvironment = widget.api.environment;
     try {
       final results = await Future.wait([
         widget.api.request('/status'),
@@ -111,7 +160,7 @@ class _DashboardState extends State<Dashboard> {
         widget.api.request('/orders'),
         widget.api.request('/connections'),
       ]);
-      if (mounted) {
+      if (mounted && !busy && requestedEnvironment == widget.api.environment) {
         setState(() {
           status = results[0] as Map<String, dynamic>;
           events = results[1] as List;
@@ -194,7 +243,7 @@ class _DashboardState extends State<Dashboard> {
   }
 
   Future<void> pause() async {
-    if (stopping) return;
+    if (stopping || switching) return;
     setState(() => stopping = true);
     try {
       final result = await widget.api.request('/pause', method: 'POST');
@@ -232,7 +281,7 @@ class _DashboardState extends State<Dashboard> {
       backgroundColor: const Color(0xFF0D171A),
       title: const Text('仓位领航', style: TextStyle(fontWeight: FontWeight.w700)),
       actions: [
-        const BadgeLabel('模拟盘'),
+        BadgeLabel(environmentLabel),
         IconButton(
           tooltip: '退出登录',
           onPressed: logout,
@@ -330,7 +379,10 @@ class _DashboardState extends State<Dashboard> {
               ),
             ),
             const SizedBox(height: 4),
-            const Text('USDT · OKX 模拟账户', style: TextStyle(color: muted)),
+            Text(
+              'USDT · OKX $environmentLabel账户',
+              style: const TextStyle(color: muted),
+            ),
             const SizedBox(height: 24),
             Row(
               children: [
@@ -371,10 +423,17 @@ class _DashboardState extends State<Dashboard> {
                         ? null
                         : () async {
                             if (await confirm(
-                              '开启模拟盘自动交易？',
-                              'AI 将按当前风控参数自动开仓、减仓、平仓及调整保护单。关闭手机后服务器仍继续运行。',
+                              '开启$environmentLabel自动交易？',
+                              '$environmentLabel：AI 将按当前风控参数自动开仓、减仓、平仓及调整保护单。${widget.api.environment == 'LIVE' ? '这会使用真实资金。' : ''}关闭手机后服务器仍继续运行。',
                             )) {
-                              await act('/start', success: '自动交易已开启');
+                              await act(
+                                '/start',
+                                body: {
+                                  'confirmLive':
+                                      widget.api.environment == 'LIVE',
+                                },
+                                success: '$environmentLabel自动交易已开启',
+                              );
                             }
                           }),
               icon: Icon(active ? Icons.pause : Icons.play_arrow),
@@ -419,7 +478,7 @@ class _DashboardState extends State<Dashboard> {
       ),
       const SizedBox(height: 16),
       if (status['okxConfigured'] != true || status['aiConfigured'] != true)
-        const Notice('连接尚未就绪。请在“设置”中保存自己的 OKX 模拟盘凭据与模型接口。'),
+        const Notice('连接尚未就绪。请在“设置”中保存当前环境的 OKX 凭据与模型接口。'),
       const Text(
         '暂停会阻止后续自动指令，已提交订单仍可能成交，已有止盈止损保留。',
         style: TextStyle(color: muted, height: 1.6, fontSize: 12),
@@ -453,7 +512,7 @@ class _DashboardState extends State<Dashboard> {
         EmptyState(
           icon: Icons.layers_outlined,
           title: snap == null ? '等待账户同步' : '当前没有持仓',
-          detail: snap == null ? '配置模拟盘后点击同步账户。' : '出现合适机会时，AI 会根据风险限制提出交易。',
+          detail: snap == null ? '配置当前环境凭据后点击同步账户。' : '出现合适机会时，AI 会根据风险限制提出交易。',
         ),
       for (final raw in rows) positionCard(raw as Map<String, dynamic>),
     ];
@@ -496,7 +555,7 @@ class _DashboardState extends State<Dashboard> {
                       ? null
                       : () async {
                           if (await confirm(
-                            '减仓一半？',
+                            '$environmentLabel：减仓一半？',
                             '${p['instrument']} 将按当前交易所仓位提交只减仓市价单。',
                           )) {
                             await act(
@@ -515,7 +574,7 @@ class _DashboardState extends State<Dashboard> {
                       ? null
                       : () async {
                           if (await confirm(
-                            '平掉该仓位？',
+                            '$environmentLabel：平掉该仓位？',
                             '${p['instrument']} 将提交只减仓市价单。',
                           )) {
                             await act(
@@ -611,6 +670,19 @@ class _DashboardState extends State<Dashboard> {
       ),
   ];
   List<Widget> settings() => [
+    SegmentedButton<String>(
+      segments: const [
+        ButtonSegment(value: 'DEMO', label: Text('模拟盘')),
+        ButtonSegment(value: 'LIVE', label: Text('实盘')),
+      ],
+      selected: {widget.api.environment},
+      onSelectionChanged: busy
+          ? null
+          : (values) => switchEnvironment(values.single),
+    ),
+    const SizedBox(height: 12),
+    if (widget.api.environment == 'LIVE')
+      const Notice('当前为实盘，交易使用真实资金。请配置实盘 API Key；切换环境不会自动开启交易。'),
     const Text(
       '运行设置',
       style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600),
@@ -621,7 +693,7 @@ class _DashboardState extends State<Dashboard> {
         children: [
           infoRow('当前用户', widget.api.username),
           infoRow('服务器', widget.api.baseUrl),
-          infoRow('交易环境', 'OKX 模拟盘'),
+          infoRow('交易环境', 'OKX $environmentLabel'),
           infoRow('OKX 凭据', status['okxConfigured'] == true ? '已配置' : '未配置'),
           infoRow('模型接口', status['aiConfigured'] == true ? '已配置' : '未配置'),
           infoRow('持仓模式', '单向 · 逐仓'),
@@ -632,6 +704,7 @@ class _DashboardState extends State<Dashboard> {
     if (connections != null)
       Surface(
         child: ConnectionEditor(
+          key: ValueKey(widget.api.environment),
           initial: connections!,
           enabled: !busy && status['enabled'] != true,
           onSave: (value) => act(
@@ -644,24 +717,30 @@ class _DashboardState extends State<Dashboard> {
       ),
     const SizedBox(height: 16),
     SettingsEditor(
-      key: ValueKey(jsonEncode(status['settings'])),
+      key: ValueKey(
+        '${widget.api.environment}:${jsonEncode(status['settings'])}',
+      ),
       initial: status['settings'] as Map<String, dynamic>,
+      loadInstruments: () async =>
+          (await widget.api.request('/instruments') as List).cast<String>(),
       enabled: !busy && status['enabled'] != true,
       onSave: (s) =>
           act('/settings', method: 'PUT', body: s, success: '风险参数已保存'),
     ),
     const SizedBox(height: 16),
-    const Notice('修改参数或连接前请暂停自动交易。每个用户应使用独立的 OKX 模拟账户。'),
+    const Notice('修改参数或连接前请暂停自动交易。每个用户应使用独立的 OKX 账户。'),
   ];
 }
 
 class SettingsEditor extends StatefulWidget {
+  final Future<List<String>> Function() loadInstruments;
   final Map<String, dynamic> initial;
   final bool enabled;
   final Future<void> Function(Map<String, dynamic>) onSave;
   const SettingsEditor({
     super.key,
     required this.initial,
+    required this.loadInstruments,
     required this.enabled,
     required this.onSave,
   });
@@ -672,6 +751,7 @@ class SettingsEditor extends StatefulWidget {
 class _SettingsEditorState extends State<SettingsEditor> {
   final form = GlobalKey<FormState>();
   late final Map<String, TextEditingController> fields;
+  late Set<String> selected;
   static const labels = {
     'maxOrderUsdt': '单笔敞口上限 / USDT',
     'maxExposureUsdt': '总敞口上限 / USDT',
@@ -683,12 +763,10 @@ class _SettingsEditorState extends State<SettingsEditor> {
   @override
   void initState() {
     super.initState();
+    selected = (widget.initial['instruments'] as List).cast<String>().toSet();
     fields = {
       for (final key in labels.keys)
         key: TextEditingController(text: '${widget.initial[key]}'),
-      'instruments': TextEditingController(
-        text: (widget.initial['instruments'] as List).join(', '),
-      ),
     };
   }
 
@@ -704,11 +782,7 @@ class _SettingsEditorState extends State<SettingsEditor> {
     if (!form.currentState!.validate()) return;
     await widget.onSave({
       for (final key in labels.keys) key: num.parse(fields[key]!.text.trim()),
-      'instruments': fields['instruments']!.text
-          .toUpperCase()
-          .split(RegExp(r'[,，\s]+'))
-          .where((s) => s.isNotEmpty)
-          .toList(),
+      'instruments': selected.toList(),
     });
   }
 
@@ -718,15 +792,11 @@ class _SettingsEditorState extends State<SettingsEditor> {
       key: form,
       child: Column(
         children: [
-          TextFormField(
-            controller: fields['instruments'],
+          InstrumentPicker(
+            initial: selected,
             enabled: widget.enabled,
-            maxLines: 2,
-            decoration: const InputDecoration(
-              labelText: '合约白名单',
-              helperText: '例：BTC-USDT-SWAP, ETH-USDT-SWAP',
-            ),
-            validator: (v) => v == null || v.trim().isEmpty ? '请填写合约' : null,
+            load: widget.loadInstruments,
+            onChanged: (value) => selected = value,
           ),
           const SizedBox(height: 16),
           for (final item in labels.entries)

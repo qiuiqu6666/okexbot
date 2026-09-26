@@ -27,13 +27,15 @@ public class TradingService {
     }
     public Map<String,Object> status() {
         Map<String,Object> result=new LinkedHashMap<>();
-        result.put("environment","DEMO");result.put("enabled",enabled);result.put("okxConfigured",okx.configured());
+        result.put("environment",store.environment().name());result.put("enabled",enabled);result.put("okxConfigured",okx.configured());
         result.put("aiConfigured",ai.configured());result.put("model",ai.model());result.put("lastError",lastError);
         result.put("lastCycle",lastCycle);result.put("nextCycle",enabled?nextCycle:null);result.put("snapshot",snapshot);
         result.put("settings",store.settings());return result;
     }
+    public java.util.List<String> instruments(){return okx.instruments();}
     public synchronized void settings(Settings settings) {
         if(enabled) throw new IllegalStateException("请先暂停自动交易再修改参数");
+        settings.validate();
         store.settings(settings);store.audit("SETTINGS","已更新风险设置",settings);
     }
     public synchronized Map<String,Object> refresh() {
@@ -44,13 +46,13 @@ public class TradingService {
         enabled=false;store.audit("CONTROL","已暂停自动交易，已有保护单保留",Map.of());
     }
     public synchronized void enable() {
-        if(!okx.configured() || !ai.configured()) throw new IllegalStateException("请先配置 OKX 模拟盘和 AI 凭据");
+        if(!okx.configured() || !ai.configured()) throw new IllegalStateException("请先配置当前环境的 OKX 和 AI 凭据");
         withLease(()->{
             okx.checkAccountMode();reconcile();
             if(!store.unsettled().isEmpty()) throw new IllegalStateException("有待确认订单，需先核对订单状态");
             snapshot=okx.snapshot();verifyProtection(snapshot);
             store.settings().validate();store.baseline(snapshot.equity());
-            store.audit("CONTROL","已开启模拟盘自动交易",Map.of());lastError="";nextCycle=Instant.now();enabled=true;
+            store.audit("CONTROL","已开启自动交易",Map.of());lastError="";nextCycle=Instant.now();enabled=true;
             return null;
         });
     }

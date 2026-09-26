@@ -62,6 +62,36 @@ void main() {
     expect(find.text(username), findsOneWidget);
     expect(find.text('未配置'), findsNWidgets(2));
     await binding.takeScreenshot('settings');
+    await tester.tap(find.text('实盘'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认'));
+    for (
+      var i = 0;
+      i < 80 && find.textContaining('当前为实盘').evaluate().isEmpty;
+      i++
+    ) {
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+    await tester.pumpAndSettle();
+    expect(find.textContaining('当前为实盘'), findsOneWidget);
+    await binding.takeScreenshot('live-settings');
+    await tester.tap(find.text('总览'));
+    await tester.pumpAndSettle();
+    expect(find.text('自动交易已暂停'), findsOneWidget);
+    await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('模拟盘'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认'));
+    for (
+      var i = 0;
+      i < 80 && find.textContaining('当前为实盘').evaluate().isNotEmpty;
+      i++
+    ) {
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+    await tester.pumpAndSettle();
+    expect(find.textContaining('当前为实盘'), findsNothing);
     await tester.tap(find.byTooltip('退出登录'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('确认'));

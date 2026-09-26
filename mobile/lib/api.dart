@@ -32,6 +32,7 @@ class PilotApi {
   final String baseUrl;
   String _token;
   String username = '';
+  String environment = 'DEMO';
   final http.Client client;
   void Function()? onUnauthorized;
   PilotApi(this.baseUrl, [String token = '', http.Client? transport])
@@ -66,6 +67,7 @@ class PilotApi {
     final req = http.Request(method, Uri.parse('$baseUrl/api$path'));
     req.followRedirects = false;
     req.headers['Content-Type'] = 'application/json';
+    req.headers['X-Trading-Environment'] = environment;
     if (_token.isNotEmpty) req.headers['Authorization'] = 'Bearer $_token';
     if (body != null) req.body = jsonEncode(body);
     try {
