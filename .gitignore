@@ -1,0 +1,9 @@
+.env
+*.log
+backend/target/
+.idea/
+.vscode/
+data/
+secrets/
+.runtime/
+mobile/build/
