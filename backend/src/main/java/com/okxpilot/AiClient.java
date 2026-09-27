@@ -31,7 +31,7 @@ public class AiClient {
         int index=MODEL_CHAIN.indexOf(model);
         if(index<0 || index+1>=MODEL_CHAIN.size()) return null;
         String text=body==null?"":body;
-        boolean unavailable=status==404 || status==502 || status==503 || status==504
+        boolean unavailable=status==400 || status==404 || status==502 || status==503 || status==504
                 || text.contains("model_not_found") || text.contains("No available channel");
         return unavailable?MODEL_CHAIN.get(index+1):null;
     }
@@ -58,7 +58,7 @@ public class AiClient {
             持有和不操作都输出 HOLD。开多输出 OPEN_LONG，开空输出 OPEN_SHORT，平仓输出 CLOSE。只选择 settings.instruments 里的合约。同一合约已有持仓时不要再开新仓。
             新开仓还要求 news.usable 为 true，并在 reason 中引用一条上下文里真实存在、且与该合约或全市场相关的资讯编号，格式如 [N0123456789abcdef]。资讯只是媒体标题和摘要，不是已确认事实，也不能单独决定方向。没有足够资讯或行情优势时 HOLD。
             reason 使用中文，不超过 1500 字，必须包含：行情依据、交易方向、仓位大小、杠杆、入场价格、止损、止盈、决策依据。
-            只返回一个 JSON 对象，不要 Markdown，不要额外字段。未使用的数字字段必须为 null：
+            只返回一个 json 对象，不要 Markdown，不要额外字段。未使用的数字字段必须为 null：
             {"action":"HOLD|OPEN_LONG|OPEN_SHORT|CLOSE","instrument":"BTC-USDT-SWAP","notionalUsdt":null,"reduceFraction":null,"takeProfit":null,"stopLoss":null,"reason":"中文决策依据"}
             这不是收益保证。禁止为了挽回亏损而提高风险。
             """;

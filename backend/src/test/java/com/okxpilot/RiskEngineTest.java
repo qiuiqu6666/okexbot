@@ -55,6 +55,7 @@ class RiskEngineTest {
     @Test void switchesToGpt6SolWhenLunaChannelIsDown(){
         assertThat(AiClient.fallbackModel("gpt-6-luna",503,"{\"error\":{\"code\":\"model_not_found\"}}")).isEqualTo("gpt-5.6-luna");
         assertThat(AiClient.fallbackModel("gpt-5.6-luna",503,"model_not_found")).isEqualTo("gpt-6-sol");
+        assertThat(AiClient.fallbackModel("gpt-5.6-luna",400,"bad request")).isEqualTo("gpt-6-sol");
         assertThat(AiClient.fallbackModel("gpt-6-sol",503,"model_not_found")).isEqualTo("deepseek-v4-pro");
         assertThat(AiClient.fallbackModel("deepseek-v4-pro",503,"model_not_found")).isNull();
         assertThat(AiClient.fallbackModel("gpt-6-luna",401,"unauthorized")).isNull();

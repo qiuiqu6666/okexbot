@@ -104,6 +104,15 @@ class TradingIntegrationTest {
         verify(ai,times(2)).decide(any());
         verify(okx,never()).place(anyMap());
     }
+    @Test void hedgePositionStillAllowsSavingItsInstrument() {
+        trading.enable();
+        RiskState state=store.riskState();RiskState.Managed managed=new RiskState.Managed();
+        managed.contracts=n("0.11");state.positions.put("BTC-USDT-SWAP#L",managed);store.riskState(state);
+        trading.settings(new Settings(List.of("BTC-USDT-SWAP","ETH-USDT-SWAP"),n("80"),n("800"),n("8"),4,10,120));
+        assertThat(store.settings().maxOrderUsdt()).isEqualByComparingTo("80");
+        assertThatThrownBy(()->trading.settings(new Settings(List.of("ETH-USDT-SWAP"),n("80"),n("800"),n("8"),4,10,120)))
+                .hasMessageContaining("策略仓位");
+    }
     @Test void settingsCanChangeWhileAutoTrading() {
         trading.enable();
         trading.settings(new Settings(List.of("BTC-USDT-SWAP","ETH-USDT-SWAP"),n("100"),n("1000"),n("10"),5,20,60));
@@ -197,6 +206,19 @@ class TradingIntegrationTest {
         when(okx.snapshot()).thenReturn(new Snapshot(Instant.now(),n("1000"),n("900"),List.of(
                 new Position(open().instrument(),n("0.08"),n("60000"),n("48"),n("0"),"isolated","pos1",created,n("1"),"foreign-trade"))));
         assertThatThrownBy(trading::reconcileNow).hasMessageContaining("外部变更");
+    }
+    @Test void exchangeCloseWaitsForHistoryWithoutPausing() throws Exception {
+        seedOwned();
+        when(okx.stops(anyString())).thenReturn(json.readTree("[{\"algoClOrdId\":\"sowned-open\",\"sz\":\"0.16\",\"slTriggerPx\":\"59000\",\"tpTriggerPx\":\"62000\",\"side\":\"sell\"}]"));
+        trading.enable();
+        when(ai.decide(any())).thenReturn(new Decision(Action.HOLD,"BTC-USDT-SWAP",null,null,null,null,"等待平仓记录"));
+        when(okx.snapshot()).thenReturn(new Snapshot(Instant.now(),n("1000"),n("990"),List.of()));
+        when(okx.positionHistory(anyString())).thenReturn(json.readTree("[]"));
+        trading.tick();
+        assertThat(trading.status().get("enabled")).isEqualTo(true);
+        assertThat(String.valueOf(trading.status().get("lastError"))).isEmpty();
+        assertThat(store.riskState().positions).containsKey("BTC-USDT-SWAP");
+        verify(okx,never()).place(anyMap());
     }
     @Test void closedLossIsCountedOnceAndKeepsCooldownAcrossRestart() throws Exception {
         seedOwned();RiskState state=store.riskState();state.consecutiveLosses=2;store.riskState(state);

@@ -76,7 +76,8 @@ public class TradingService {
     public synchronized void settings(Settings settings) {
         settings.validate();
         withLease(()->{
-            if(!settings.instruments().containsAll(store.riskState().positions.keySet())) throw new IllegalStateException("不能移除仍有策略仓位的合约");
+            var held=store.riskState().positions.keySet().stream().map(TradingGuard::base).collect(java.util.stream.Collectors.toSet());
+            if(!settings.instruments().containsAll(held)) throw new IllegalStateException("不能移除仍有策略仓位的合约");
             if(store.unsettled().stream().anyMatch(row->!settings.instruments().contains(row.get("instrument").toString())))
                 throw new IllegalStateException("不能移除仍有未确认订单的合约");
             store.settings(settings);store.audit("SETTINGS","已更新风险设置",settings);return null;

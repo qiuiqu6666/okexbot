@@ -130,7 +130,8 @@ public class TradingGuard {
                         if(match!=null) throw new IllegalStateException("平仓历史匹配不唯一");match=h;
                     }
                 }
-                if(match==null) throw new IllegalStateException("仓位已消失但平仓损益尚未核实，禁止新增风险");
+                // Exchange stop/take-profit can remove the position before history is visible. Keep the key so new risk stays blocked, and retry next poll.
+                if(match==null) continue;
                 closed.add(new Closed(key,instrument,m,match));
             }
         }
