@@ -27,6 +27,7 @@ public class TradingService {
     private final Map<String,BigDecimal> analyzedPrice=new HashMap<>();
     private final Map<String,BigDecimal> analyzedPnl=new HashMap<>();
     private String attentionReason="到达分析间隔";
+    private volatile String lastScan="";
     private String nearStop="";
     private volatile Snapshot snapshot;
     private volatile Instant quotedAt=Instant.EPOCH;
@@ -49,7 +50,7 @@ public class TradingService {
         result.put("aiConfigured",ai.configured());result.put("model",ai.model());result.put("lastError",lastError);
         result.put("lastCycle",lastCycle);result.put("nextCycle",enabled?nextCycle:null);result.put("snapshot",snapshot);result.put("quotes",quotes);
         result.put("settings",store.settings());result.put("riskPolicy",store.riskPolicy());
-        result.put("analyzing",analyzing);
+        result.put("analyzing",analyzing);result.put("lastScan",lastScan);
         RiskState state=store.riskState();result.put("riskStatus",Map.of("haltReason",state.haltReason,"peakEquity",state.peakEquity,
                 "consecutiveLosses",state.consecutiveLosses,"cooldownUntil",state.cooldownUntil));return result;
     }
@@ -138,23 +139,44 @@ public class TradingService {
         if(!store.unsettled().isEmpty()) throw new IllegalStateException("存在未确认订单，本轮不产生新订单");
         snapshot=okx.snapshot();guard.sync(snapshot,okx);guard.observeEquity(snapshot);
         Map<String,Object> markets=new LinkedHashMap<>();
+        MarketRegime.Assessment chosen=null;
+        boolean blind=true,oppose=false;
         for(String id:settings.instruments()) {
             store.renew();
             var frames=new LinkedHashMap<String,Object>();
-            frames.put("5m",timeframe(okx.candles(id,"5m")));
-            for(String bar:List.of("15m","1H")) {try{frames.put(bar,timeframe(okx.candles(id,bar)));}catch(RuntimeException e){frames.put(bar,Map.of("available",false));}}
+            JsonNode five=okx.candles(id,"5m");
+            frames.put("5m",timeframe(five));
+            JsonNode fifteen=optionalCandles(id,"15m"),hour=optionalCandles(id,"1H"),three=optionalCandles(id,"3H");
+            frames.put("15m",timeframe(fifteen));frames.put("1H",timeframe(hour));frames.put("3H",timeframe(three));
+            if(five.size()>=55) blind=false;
+            MarketRegime.Assessment assessment=MarketRegime.scan(id,five,fifteen,hour,three);
             var market=new LinkedHashMap<String,Object>();
             market.put("instrument",okx.instrument(id));market.put("price",okx.price(id));market.put("timeframes",frames);
+            market.put("regime",assessment==null?"UNKNOWN":assessment.regime());
+            market.put("strategy",assessment==null || !assessment.actionable()?"":assessment.strategy());
+            market.put("direction",assessment==null?"":assessment.direction());
             markets.put(id,market);
+            if(assessment!=null && (chosen==null || !chosen.actionable() && assessment.actionable())) chosen=assessment;
+            if(assessment!=null && snapshot!=null) for(Position position:snapshot.positions())
+                if(position.instrument().equals(id) && MarketRegime.opposes(assessment.regime(),position.contracts().signum())) oppose=true;
         }
         rememberMarket(markets);
+        boolean urgent=!"到达分析间隔".equals(attentionReason) && !"手动预览".equals(attentionReason);
+        if(execute && !blind && (chosen==null || !chosen.actionable()) && !urgent && !oppose) {
+            String reason=chosen==null?"K 线不足，本轮不调用 AI":chosen.summary()+"；未出现进场结构，本轮不调用 AI";
+            lastScan=reason;lastError="";lastCycle=Instant.now();
+            return new Decision(Action.HOLD,settings.instruments().get(0),null,null,null,null,reason);
+        }
+        String signalText=chosen==null?"无新进场信号":chosen.summary();
+        if(oppose) signalText=signalText+"；持仓与 3 小时/1 小时方向冲突，复核是否退出";
+        lastScan=signalText;
         store.renew();
         var evidence=news.evidence(settings.instruments());
         store.renew();
         store.audit("NEWS_EVIDENCE",evidence.message(),evidence);
         Decision d;
         analyzing=true;
-        try {d=ai.decide(Map.of("settings",settings,"riskPolicy",store.riskPolicy(),"account",snapshot,"markets",markets,"news",evidence,"environment",store.environment(),"now",Instant.now(),"trigger",attentionReason));}
+        try {d=ai.decide(Map.of("settings",settings,"riskPolicy",store.riskPolicy(),"account",snapshot,"markets",markets,"news",evidence,"environment",store.environment(),"now",Instant.now(),"trigger",attentionReason,"signal",signalText));}
         catch(IllegalArgumentException | IllegalStateException e) {
             return skipped(settings,safeMessage(e));
         }
@@ -408,6 +430,9 @@ public class TradingService {
         analyzedPnl.clear();
         if(snapshot==null) return;
         for(Position position:snapshot.positions()) if(position.unrealizedPnl()!=null) analyzedPnl.put(position.instrument(),position.unrealizedPnl());
+    }
+    private JsonNode optionalCandles(String id,String bar) {
+        try {return okx.candles(id,bar);} catch(RuntimeException e) {return json.createArrayNode();}
     }
     private static Map<String,Object> timeframe(JsonNode candles){return Map.of("indicators",Indicators.from(candles));}
     private static BigDecimal optionalNumber(JsonNode node,String key) {

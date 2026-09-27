@@ -152,12 +152,26 @@ public class OkxClient {
     public JsonNode candles(String id) { return candles(id,"5m"); }
     public JsonNode candles(String id,String bar) {
         validateId(id);
-        if(!"5m".equals(bar) && !"15m".equals(bar) && !"1H".equals(bar)) throw new IllegalArgumentException("不支持的K线周期");
-        JsonNode rows=call("GET","/api/v5/market/candles?instId="+id+"&bar="+bar+"&limit=60",null,false);
-        long maxAge="5m".equals(bar)?600000L:"15m".equals(bar)?1800000L:7200000L;
-        if(rows.size()<20 || System.currentTimeMillis()-rows.get(0).path(0).asLong()>maxAge)
+        JsonNode rows=switch(bar) {
+            case "5m" -> fetchCandles(id,"5m",80);
+            case "15m" -> fetchCandles(id,"15m",80);
+            case "1H" -> fetchCandles(id,"1H",100);
+            case "3H" -> CandleBars.aggregate(fetchCandles(id,"1H",240),10_800_000L,3_600_000L);
+            default -> throw new IllegalArgumentException("不支持的K线周期");
+        };
+        long maxAge=switch(bar) {
+            case "5m" -> 600_000L;
+            case "15m" -> 1_800_000L;
+            case "1H" -> 7_200_000L;
+            default -> 14_400_000L;
+        };
+        if(rows.size()<35 || System.currentTimeMillis()-rows.get(0).path(0).asLong()>maxAge)
             throw new IllegalStateException("K 线缺失或已过期");
         return rows;
+    }
+    private JsonNode fetchCandles(String id,String bar,int limit) {
+        if(!"5m".equals(bar) && !"15m".equals(bar) && !"1H".equals(bar)) throw new IllegalArgumentException("不支持的K线周期");
+        return call("GET","/api/v5/market/candles?instId="+id+"&bar="+bar+"&limit="+limit,null,false);
     }
     public JsonNode pendingOrders() { return call("GET","/api/v5/trade/orders-pending?instType=SWAP",null,true); }
     public List<JsonNode> pendingAlgos() {

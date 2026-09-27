@@ -1011,7 +1011,7 @@ class _SettingsEditorState extends State<SettingsEditor> {
     'maxDailyLossPct': '日内权益损失上限 / %',
     'maxPositions': '最大持仓数量',
     'leverage': '杠杆',
-    'intervalSeconds': '分析间隔 / 秒（建议 300，至少 60）',
+    'intervalSeconds': '分析间隔 / 秒（建议 300，5 分钟检查）',
   };
   @override
   void initState() {
